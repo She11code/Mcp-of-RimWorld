@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <!-- 内部唯一标识符，格式: YourName.ModName -->
+  <packageId>YourName.RimWorldAI</packageId>
+
+  <!-- Mod 显示名称 -->
+  <name>RimWorld AI</name>
+
+  <!-- 作者信息 -->
+  <author>PureBeing</author>
+
+  <!-- 支持的游戏版本 -->
+  <supportedVersions>
+    <li>1.6</li>
+  </supportedVersions>
+
+  <!-- Mod 描述 -->
+  <description>Adds AI-related features to RimWorld.
+
+Features:
+- Enhanced AI behavior
+- Custom AI components
+- Smart automation
+
+Compatible with RimWorld 1.5.</description>
+</ModMetaData>

@@ -1,0 +1,23 @@
+# Build outputs
+bin/
+obj/
+*.dll
+*.pdb
+*.exe
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Logs and temp files
+*.log
+tests/test.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude local settings (optional - uncomment if you don't want to share)
+# .claude/settings.local.json
