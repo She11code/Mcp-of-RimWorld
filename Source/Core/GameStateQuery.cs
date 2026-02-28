@@ -96,24 +96,97 @@ namespace RimWorldAI.Core
                     case "get_materials":
                         return GetMaterials(query);
 
+                    case "get_exposed_items":
+                        return GetExposedItems(query);
+
                     case "get_item_by_def":
                         return GetItemByDefName(query);
 
-                    // 建筑分类查询（无参数，直接获取详细信息）
+                    // 建筑分类查询（合并为一个命令）
+                    case "get_buildings":
+                        return GetBuildings(query);
+
+                    // 兼容旧命令（重定向到新命令）
                     case "get_production_buildings":
-                        return GetProductionBuildings(query);
+                        return GetBuildings(query, "production");
 
                     case "get_power_buildings":
-                        return GetPowerBuildings(query);
+                        return GetBuildings(query, "power");
 
                     case "get_defense_buildings":
-                        return GetDefenseBuildings(query);
+                        return GetBuildings(query, "defense");
 
                     case "get_storage_buildings":
-                        return GetStorageBuildings(query);
+                        return GetBuildings(query, "storage");
 
                     case "get_furniture":
-                        return GetFurniture(query);
+                        return GetBuildings(query, "furniture");
+
+                    case "get_research_status":
+                        return GetResearchStatus(query);
+
+                    case "set_research_project":
+                        return SetResearchProject(query);
+
+                    case "get_workbench_recipes":
+                        return GetWorkbenchRecipes(query);
+
+                    case "get_workbench_bills":
+                        return GetWorkbenchBills(query);
+
+                    // 医疗系统命令
+                    case "get_medical_care":
+                        return GetMedicalCare(query);
+
+                    case "set_medical_care":
+                        return SetMedicalCare(query);
+
+                    case "set_self_tend":
+                        return SetSelfTend(query);
+
+                    case "get_drug_policy":
+                        return GetDrugPolicy(query);
+
+                    // 通知系统
+                    case "get_notifications":
+                        return GetNotifications(query);
+
+                    case "mark_all_notifications_read":
+                        return MarkAllNotificationsRead();
+
+                    case "clear_notifications":
+                        return ClearNotifications();
+
+                    case "get_alerts":
+                        return GetAlerts();
+
+                    // 殖民者控制
+                    case "draft_pawn":
+                        return DraftPawn(query);
+
+                    case "undraft_pawn":
+                        return UndraftPawn(query);
+
+                    case "set_fire_at_will":
+                        return SetFireAtWill(query);
+
+                    case "get_timetable":
+                        return GetTimetable(query);
+
+                    case "set_timetable":
+                        return SetTimetable(query);
+
+                    case "set_timetable_range":
+                        return SetTimetableRange(query);
+
+                    case "get_time_assignments":
+                        return GetTimeAssignments();
+
+                    case "get_use_work_priorities":
+                        return GetUseWorkPriorities();
+
+                    case "set_use_work_priorities":
+                        return SetUseWorkPriorities(query);
 
                     case "get_building_by_def":
                         return GetBuildingByDefName(query);
@@ -195,6 +268,22 @@ namespace RimWorldAI.Core
                     case "get_room_info":
                         return GetRoomInfo(query);
 
+                    // ==================== 区域管理控制命令 ====================
+                    case "create_area":
+                        return CreateArea(query);
+
+                    case "delete_area":
+                        return DeleteArea(query);
+
+                    case "rename_area":
+                        return RenameArea(query);
+
+                    case "add_cells_to_area":
+                        return AddCellsToArea(query);
+
+                    case "remove_cells_from_area":
+                        return RemoveCellsFromArea(query);
+
                     case "get_resources":
                         return GetResources(query);
 
@@ -212,7 +301,7 @@ namespace RimWorldAI.Core
                         return SetWorkPriority(query);
 
                     case "get_work_types":
-                        return GetWorkTypes();
+                        return GetWorkTypes(query);
 
                     case "get_available_work":
                         return GetAvailableWork(query);
@@ -224,9 +313,6 @@ namespace RimWorldAI.Core
                     // 批量工作触发
                     case "trigger_work":
                         return TriggerWork(query);
-
-                    case "get_supported_work_types":
-                        return GetSupportedWorkTypes();
 
                     // ESDF 和 Voronoi 地图分析
                     case "get_esdf_map":
@@ -593,6 +679,60 @@ namespace RimWorldAI.Core
         }
 
         /// <summary>
+        /// 获取工作台可用配方列表
+        /// </summary>
+        private static string GetWorkbenchRecipes(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("thingId"))
+                return ErrorResponse("Missing 'thingId' field");
+
+            if (!int.TryParse(query["thingId"]?.ToString(), out int thingId))
+                return ErrorResponse("Invalid 'thingId' format");
+
+            var thing = GameStateProvider.GetThingById(thingId);
+            if (thing == null)
+                return ErrorResponse($"Thing with id {thingId} not found");
+
+            if (!(thing is Building building))
+                return ErrorResponse($"Thing {thingId} is not a building");
+
+            return SuccessResponse(GameStateProvider.GetWorkbenchRecipes(building));
+        }
+
+        /// <summary>
+        /// 获取工作台当前生产账单
+        /// </summary>
+        private static string GetWorkbenchBills(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("thingId"))
+                return ErrorResponse("Missing 'thingId' field");
+
+            if (!int.TryParse(query["thingId"]?.ToString(), out int thingId))
+                return ErrorResponse("Invalid 'thingId' format");
+
+            var thing = GameStateProvider.GetThingById(thingId);
+            if (thing == null)
+                return ErrorResponse($"Thing with id {thingId} not found");
+
+            if (!(thing is Building building))
+                return ErrorResponse($"Thing {thingId} is not a building");
+
+            return SuccessResponse(GameStateProvider.GetWorkbenchBills(building));
+        }
+
+        /// <summary>
+        /// 获取露天/暴露物资（生存关键：检测会恶化的物资）
+        /// </summary>
+        private static string GetExposedItems(Dictionary<string, object> query)
+        {
+            var map = GameStateProvider.GetCurrentMap();
+            if (map == null)
+                return ErrorResponse("No current map available");
+
+            return SuccessResponse(GameStateProvider.GetExposedItems(map));
+        }
+
+        /// <summary>
         /// 按defName获取特定物品
         /// </summary>
         private static string GetItemByDefName(Dictionary<string, object> query)
@@ -610,66 +750,368 @@ namespace RimWorldAI.Core
 
         #endregion
 
+        #region 医疗系统
+
+        /// <summary>
+        /// 获取殖民者医疗护理设置
+        /// </summary>
+        private static string GetMedicalCare(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.GetPawnMedicalCare(pawn));
+        }
+
+        /// <summary>
+        /// 设置殖民者医疗护理级别
+        /// </summary>
+        private static string SetMedicalCare(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!query.ContainsKey("medCareLevel"))
+                return ErrorResponse("Missing required field: medCareLevel");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            if (!int.TryParse(query["medCareLevel"]?.ToString(), out int medCareLevel))
+                return ErrorResponse("Invalid medCareLevel format");
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.SetPawnMedicalCare(pawn, medCareLevel));
+        }
+
+        /// <summary>
+        /// 设置殖民者是否允许自疗
+        /// </summary>
+        private static string SetSelfTend(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!query.ContainsKey("allowed"))
+                return ErrorResponse("Missing required field: allowed");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            bool allowed = query["allowed"]?.ToString()?.ToLower() == "true";
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.SetPawnSelfTend(pawn, allowed));
+        }
+
+        /// <summary>
+        /// 获取殖民者药物政策
+        /// </summary>
+        private static string GetDrugPolicy(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.GetPawnDrugPolicy(pawn));
+        }
+
+        #endregion
+
+        #region 通知系统
+
+        /// <summary>
+        /// 获取通知列表
+        /// </summary>
+        private static string GetNotifications(Dictionary<string, object> query)
+        {
+            string sinceId = query.ContainsKey("sinceId") ? query["sinceId"]?.ToString() : null;
+            bool onlyNew = query.ContainsKey("onlyNew") && query["onlyNew"]?.ToString().ToLower() == "true";
+            int limit = 50;
+
+            if (query.ContainsKey("limit") && int.TryParse(query["limit"]?.ToString(), out int parsedLimit))
+            {
+                limit = Math.Min(Math.Max(1, parsedLimit), 200);
+            }
+
+            return SuccessResponse(GameStateProvider.GetNotifications(sinceId, onlyNew, limit));
+        }
+
+        /// <summary>
+        /// 标记所有通知为已读
+        /// </summary>
+        private static string MarkAllNotificationsRead()
+        {
+            return SuccessResponse(GameStateProvider.MarkAllNotificationsRead());
+        }
+
+        /// <summary>
+        /// 清除所有通知
+        /// </summary>
+        private static string ClearNotifications()
+        {
+            return SuccessResponse(GameStateProvider.ClearNotifications());
+        }
+
+        /// <summary>
+        /// 获取当前活动的警报
+        /// </summary>
+        private static string GetAlerts()
+        {
+            return SuccessResponse(GameStateProvider.GetAlerts());
+        }
+
+        #endregion
+
+        #region 殖民者控制
+
+        /// <summary>
+        /// 征召殖民者
+        /// </summary>
+        private static string DraftPawn(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.DraftPawn(pawn));
+        }
+
+        /// <summary>
+        /// 解除征召
+        /// </summary>
+        private static string UndraftPawn(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.UndraftPawn(pawn));
+        }
+
+        /// <summary>
+        /// 设置火力模式
+        /// </summary>
+        private static string SetFireAtWill(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            bool fireAtWill = true;
+            if (query.ContainsKey("fireAtWill"))
+            {
+                fireAtWill = query["fireAtWill"]?.ToString().ToLower() == "true";
+            }
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.SetFireAtWill(pawn, fireAtWill));
+        }
+
+        /// <summary>
+        /// 获取殖民者日程表
+        /// </summary>
+        private static string GetTimetable(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.GetTimetable(pawn));
+        }
+
+        /// <summary>
+        /// 设置单个小时的日程
+        /// </summary>
+        private static string SetTimetable(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            if (!query.ContainsKey("hour"))
+                return ErrorResponse("Missing required field: hour");
+
+            if (!int.TryParse(query["hour"]?.ToString(), out int hour))
+                return ErrorResponse("Invalid hour format");
+
+            if (!query.ContainsKey("assignment"))
+                return ErrorResponse("Missing required field: assignment");
+
+            string assignment = query["assignment"]?.ToString();
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.SetTimetable(pawn, hour, assignment));
+        }
+
+        /// <summary>
+        /// 批量设置日程
+        /// </summary>
+        private static string SetTimetableRange(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("pawnId"))
+                return ErrorResponse("Missing required field: pawnId");
+
+            if (!int.TryParse(query["pawnId"]?.ToString(), out int pawnId))
+                return ErrorResponse("Invalid pawnId format");
+
+            if (!query.ContainsKey("startHour"))
+                return ErrorResponse("Missing required field: startHour");
+
+            if (!int.TryParse(query["startHour"]?.ToString(), out int startHour))
+                return ErrorResponse("Invalid startHour format");
+
+            if (!query.ContainsKey("endHour"))
+                return ErrorResponse("Missing required field: endHour");
+
+            if (!int.TryParse(query["endHour"]?.ToString(), out int endHour))
+                return ErrorResponse("Invalid endHour format");
+
+            if (!query.ContainsKey("assignment"))
+                return ErrorResponse("Missing required field: assignment");
+
+            string assignment = query["assignment"]?.ToString();
+
+            var pawn = FindPawnById(pawnId, out string pawnError);
+            if (pawn == null)
+                return ErrorResponse(pawnError ?? $"Pawn with id {pawnId} not found");
+
+            return SuccessResponse(GameStateProvider.SetTimetableRange(pawn, startHour, endHour, assignment));
+        }
+
+        /// <summary>
+        /// 获取所有时间安排类型
+        /// </summary>
+        private static string GetTimeAssignments()
+        {
+            return SuccessResponse(GameStateProvider.GetTimeAssignments());
+        }
+
+        /// <summary>
+        /// 获取是否启用了手动工作优先级模式
+        /// </summary>
+        private static string GetUseWorkPriorities()
+        {
+            return SuccessResponse(GameStateProvider.GetUseWorkPriorities());
+        }
+
+        /// <summary>
+        /// 设置是否启用手动工作优先级模式
+        /// </summary>
+        private static string SetUseWorkPriorities(Dictionary<string, object> query)
+        {
+            if (!query.TryGetValue("enabled", out var enabledObj) || enabledObj == null)
+            {
+                return ErrorResponse("Missing required parameter: enabled (true/false)");
+            }
+
+            bool enabled;
+            if (enabledObj is bool b)
+            {
+                enabled = b;
+            }
+            else
+            {
+                string enabledStr = enabledObj.ToString()?.ToLower() ?? "";
+                if (enabledStr == "true" || enabledStr == "1")
+                    enabled = true;
+                else if (enabledStr == "false" || enabledStr == "0")
+                    enabled = false;
+                else
+                    return ErrorResponse("Invalid 'enabled' parameter. Must be true or false.");
+            }
+
+            return SuccessResponse(GameStateProvider.SetUseWorkPriorities(enabled));
+        }
+
+        #endregion
+
         #region 建筑分类查询
 
         /// <summary>
-        /// 获取所有生产建筑（无参数）
+        /// 获取建筑（按类别筛选）
+        /// 参数: category - 类别 (production/power/defense/storage/furniture/all)
         /// </summary>
-        private static string GetProductionBuildings(Dictionary<string, object> query)
+        private static string GetBuildings(Dictionary<string, object> query, string defaultCategory = null)
         {
             var map = GameStateProvider.GetCurrentMap();
             if (map == null)
                 return ErrorResponse("No current map available");
 
-            return SuccessResponse(GameStateProvider.GetProductionBuildingsDetailed(map));
+            string category = defaultCategory ?? (query.ContainsKey("category") ? query["category"]?.ToString() ?? "all" : "all");
+            return SuccessResponse(GameStateProvider.GetBuildingsByCategory(category, map));
         }
 
         /// <summary>
-        /// 获取所有电力建筑（无参数）
+        /// 获取研究系统状态（无参数）
         /// </summary>
-        private static string GetPowerBuildings(Dictionary<string, object> query)
+        private static string GetResearchStatus(Dictionary<string, object> query)
         {
             var map = GameStateProvider.GetCurrentMap();
             if (map == null)
                 return ErrorResponse("No current map available");
 
-            return SuccessResponse(GameStateProvider.GetPowerBuildingsDetailed(map));
+            return SuccessResponse(GameStateProvider.GetResearchStatus(map));
         }
 
         /// <summary>
-        /// 获取所有防御建筑（无参数）
+        /// 设置当前研究项目
+        /// 参数: projectDefName - 研究项目的 defName
         /// </summary>
-        private static string GetDefenseBuildings(Dictionary<string, object> query)
+        private static string SetResearchProject(Dictionary<string, object> query)
         {
-            var map = GameStateProvider.GetCurrentMap();
-            if (map == null)
-                return ErrorResponse("No current map available");
+            if (!query.ContainsKey("projectDefName"))
+                return ErrorResponse("Missing required field: projectDefName");
 
-            return SuccessResponse(GameStateProvider.GetDefenseBuildingsDetailed(map));
-        }
-
-        /// <summary>
-        /// 获取所有储存建筑（无参数）
-        /// </summary>
-        private static string GetStorageBuildings(Dictionary<string, object> query)
-        {
-            var map = GameStateProvider.GetCurrentMap();
-            if (map == null)
-                return ErrorResponse("No current map available");
-
-            return SuccessResponse(GameStateProvider.GetStorageBuildingsDetailed(map));
-        }
-
-        /// <summary>
-        /// 获取所有家具（无参数）
-        /// </summary>
-        private static string GetFurniture(Dictionary<string, object> query)
-        {
-            var map = GameStateProvider.GetCurrentMap();
-            if (map == null)
-                return ErrorResponse("No current map available");
-
-            return SuccessResponse(GameStateProvider.GetFurnitureDetailed(map));
+            string projectDefName = query["projectDefName"].ToString();
+            return SuccessResponse(GameStateProvider.SetResearchProject(projectDefName));
         }
 
         /// <summary>
@@ -1132,6 +1574,109 @@ namespace RimWorldAI.Core
             return SuccessResponse(GameStateProvider.GetRoomInfo(room));
         }
 
+        // ==================== 区域管理控制方法 ====================
+
+        /// <summary>
+        /// 创建允许区域
+        /// 参数: name (必需), cells (可选)
+        /// </summary>
+        private static string CreateArea(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("name"))
+            {
+                return ErrorResponse("Missing required field: name");
+            }
+
+            string name = query["name"]?.ToString();
+            string cellsJson = query.ContainsKey("cells") ? query["cells"]?.ToString() : null;
+
+            var result = GameStateProvider.CreateAllowedArea(name, cellsJson);
+            return SuccessResponse(result);
+        }
+
+        /// <summary>
+        /// 删除允许区域
+        /// 参数: areaId (必需)
+        /// </summary>
+        private static string DeleteArea(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("areaId"))
+            {
+                return ErrorResponse("Missing required field: areaId");
+            }
+
+            if (!int.TryParse(query["areaId"]?.ToString(), out int areaId))
+            {
+                return ErrorResponse("Invalid areaId format");
+            }
+
+            var result = GameStateProvider.DeleteAllowedArea(areaId);
+            return SuccessResponse(result);
+        }
+
+        /// <summary>
+        /// 重命名允许区域
+        /// 参数: areaId (必需), name (必需)
+        /// </summary>
+        private static string RenameArea(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("areaId") || !query.ContainsKey("name"))
+            {
+                return ErrorResponse("Missing required fields: areaId, name");
+            }
+
+            if (!int.TryParse(query["areaId"]?.ToString(), out int areaId))
+            {
+                return ErrorResponse("Invalid areaId format");
+            }
+
+            string name = query["name"]?.ToString();
+            var result = GameStateProvider.RenameAllowedArea(areaId, name);
+            return SuccessResponse(result);
+        }
+
+        /// <summary>
+        /// 向区域添加格子
+        /// 参数: areaId (必需), cells (必需)
+        /// </summary>
+        private static string AddCellsToArea(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("areaId") || !query.ContainsKey("cells"))
+            {
+                return ErrorResponse("Missing required fields: areaId, cells");
+            }
+
+            if (!int.TryParse(query["areaId"]?.ToString(), out int areaId))
+            {
+                return ErrorResponse("Invalid areaId format");
+            }
+
+            string cellsJson = query["cells"]?.ToString();
+            var result = GameStateProvider.AddCellsToArea(areaId, cellsJson);
+            return SuccessResponse(result);
+        }
+
+        /// <summary>
+        /// 从区域移除格子
+        /// 参数: areaId (必需), cells (必需)
+        /// </summary>
+        private static string RemoveCellsFromArea(Dictionary<string, object> query)
+        {
+            if (!query.ContainsKey("areaId") || !query.ContainsKey("cells"))
+            {
+                return ErrorResponse("Missing required fields: areaId, cells");
+            }
+
+            if (!int.TryParse(query["areaId"]?.ToString(), out int areaId))
+            {
+                return ErrorResponse("Invalid areaId format");
+            }
+
+            string cellsJson = query["cells"]?.ToString();
+            var result = GameStateProvider.RemoveCellsFromArea(areaId, cellsJson);
+            return SuccessResponse(result);
+        }
+
         /// <summary>
         /// 获取资源统计
         /// 参数: summary (可选) - 是否返回摘要形式
@@ -1279,13 +1824,10 @@ namespace RimWorldAI.Core
         /// <summary>
         /// 获取所有工作类型
         /// </summary>
-        private static string GetWorkTypes()
+        private static string GetWorkTypes(Dictionary<string, object> query)
         {
-            return SuccessResponse(new
-            {
-                count = GameStateProvider.GetAllWorkTypes().Count,
-                workTypes = GameStateProvider.GetAllWorkTypes()
-            });
+            string filter = query.ContainsKey("filter") ? query["filter"]?.ToString() ?? "all" : "all";
+            return SimpleJson.SerializeObject(GameStateProvider.GetWorkTypes(filter));
         }
 
         /// <summary>
@@ -1355,12 +1897,6 @@ namespace RimWorldAI.Core
         /// <summary>
         /// 获取所有支持的工作类型
         /// </summary>
-        private static string GetSupportedWorkTypes()
-        {
-            var result = GameStateProvider.GetSupportedWorkTypes();
-            return SimpleJson.SerializeObject(result);
-        }
-
         #endregion
 
         #region 控制命令
@@ -3236,6 +3772,7 @@ namespace RimWorldAI.Core
 
         /// <summary>
         /// 获取房间边界建造状态（用于AI追踪建造进度）
+        /// 可选参数build=true时自动放置蓝图建造房间
         /// </summary>
         private static string GetRoomBoundary(Dictionary<string, object> query)
         {
@@ -3255,7 +3792,17 @@ namespace RimWorldAI.Core
                 return ErrorResponse("Invalid parameter format");
             }
 
-            var result = GameStateProvider.GetRoomBoundary(centerX, centerZ, width, height);
+            // 解析可选参数
+            bool build = false;
+            if (query.ContainsKey("build"))
+            {
+                bool.TryParse(query["build"]?.ToString(), out build);
+            }
+
+            string wallDefName = query.ContainsKey("wallDef") ? query["wallDef"]?.ToString() : "Wall";
+            string stuffDefName = query.ContainsKey("stuffDef") ? query["stuffDef"]?.ToString() : "WoodLog";
+
+            var result = GameStateProvider.GetRoomBoundary(centerX, centerZ, width, height, null, build, wallDefName, stuffDefName);
             if (result.ContainsKey("error"))
             {
                 return ErrorResponse(result["error"].ToString());

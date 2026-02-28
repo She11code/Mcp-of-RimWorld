@@ -140,7 +140,14 @@ namespace RimWorldAI.Core
                     "[心情管理]高质量食物、舒适房间、娱乐设施可提升心情",
                     "[技能激情]Passion影响学习速度：None(无加成)、Minor(1.5倍)、Major(2倍)",
                     "[特质影响]FastLearner(学习快)、Cannibal(食人癖-吃人不减心情)",
-                    "[响应字段]pawnId(唯一标识)、name、skills(技能列表)、traits(特质)、needs(hunger/rest/joy)、moodLevel、healthState"
+                    "[响应字段]pawnId(唯一标识)、name、skills(技能列表)、traits(特质)、needs(hunger/rest/joy)、moodLevel、healthState",
+                    // === 新增：室内需求 ===
+                    "[室内需求-重要]殖民者需要在室内睡觉、吃饭、工作！室外会降低心情",
+                    "[睡眠环境]床必须放在封闭房间内，有屋顶，否则会冻死/热死/心情差",
+                    "[工作环境]工作台、研究台必须在室内，室外工作会受天气影响",
+                    "[温度控制]室内可以安装Cooler(冷却器)和Heater(加热器)控制温度",
+                    "[舒适度]室内地板、照明、家具提升殖民者心情和工作效率",
+                    "[基地规划]确保每个殖民者有独立卧室或至少有床在室内房间"
                 },
                 Category = "query"
             },
@@ -189,22 +196,25 @@ namespace RimWorldAI.Core
             ["get_pawn_info"] = new CommandDefinition
             {
                 Name = "get_pawn_info",
-                Description = "获取角色详情（技能、特质、健康、装备、心情等）",
+                Description = "获取角色详情（技能、特质、健康、装备、心情、睡眠环境等）",
                 RequiredParams = new[] { "pawnId" },
                 Hints = new[]
                 {
                     "[参数说明]pawnId: 从get_colonists/get_pawns获取的角色唯一标识",
                     "[技能系统]skillLevel(0-20级)，passion(None/Minor/Major影响学习速度)",
                     "[特质系统]traits数组，如'FastLearner'(学习快)、'Cannibal'(食人癖)",
-                    "[健康系统]healthConditions(健康状况)、injuries(伤势)、diseases(疾病)",
+                    "[健康系统]healthPercent(总体健康百分比)、hediffs(伤害/疾病列表)",
+                    "[健康扩展]canCrawl(能否爬行)、painLevel(疼痛等级0.0+)、bleedRate(出血率)、canBleed(能否出血)",
                     "[心情系统]moodLevel(0-100)，低于30%可能精神崩溃",
-                    "[详细技能]返回技能等级(0-20)和激情(None/Minor/Major)",
-                    "[健康详情]healthConditions含伤口、疾病、义体、成瘾",
-                    "[需求状态]needs包含hunger(饥饿)、rest(疲劳)、joy(娱乐)",
-                    "[心情因素]moodFactors列出影响心情的具体因素(+/-值)",
+                    "[需求状态]needs包含hunger(饥饿)、rest(疲劳)、joy(娱乐)、comfort(舒适度)、outdoors(户外)、chemical(化学需求/成瘾)",
+                    "[能力统计]ticksPerMoveCardinal/Diagonal(移动速度tick)、psychicSensitivity(精神敏感度)、disabledWorkTags(禁止工作)",
+                    "[睡眠环境]sleepEnvironment包含：hasOwnedBed(是否有床)、isRoofed(是否有屋顶)、isOutdoors(是否户外)、temperature(温度)",
+                    "[睡眠威胁]sleepEnvironment.warnings数组，包含生存威胁警告如'露天低温-会冻死'、'高温中暑-会热死'",
+                    "[睡眠危险]sleepEnvironment.isDangerous=true表示睡眠环境有生命危险，需要立即处理！",
+                    "[精神状态]mentalState(精神崩溃类型)、inspiration(灵感类型)",
                     "[装备详情]equipment列出当前装备的武器和衣物",
-                    "[当前工作]currentJob显示正在执行的任务和目标",
-                    "[响应字段]skills、traits、health、needs(需求)、equipment(装备)、currentJob(当前工作)"
+                    "[当前工作]curJob显示正在执行的任务",
+                    "[响应字段]skills、traits、hediffs、needs、equipment、sleepEnvironment、mentalState、inspiration等"
                 },
                 Category = "query"
             },
@@ -358,6 +368,309 @@ namespace RimWorldAI.Core
                 },
                 Category = "query"
             },
+            ["get_exposed_items"] = new CommandDefinition
+            {
+                Name = "get_exposed_items",
+                Description = "检测露天/暴露物资（生存关键：检测正在恶化和腐烂的物资）",
+                Hints = new[]
+                {
+                    "[核心用途]检测暴露在室外会恶化/腐烂的物资，避免资源损失",
+                    "[露天定义]无屋顶、心理户外、接触地图边缘的区域",
+                    "[恶化机制]部分物品在室外会持续损失耐久度，如武器/衣物/食物",
+                    "[腐烂机制]食物类物品会随时间腐烂，露天会加速腐烂",
+                    "[返回内容]items数组列出所有露天物资及其恶化状态",
+                    "[关键字段]isDangerous=true表示有威胁，warnings数组列出具体威胁",
+                    "[恶化率]deteriorationRate>0表示正在恶化，单位：/天",
+                    "[腐烂时间]ticksUntilRot表示剩余腐烂时间，2500ticks=1游戏小时",
+                    "[紧急处理]isDangerous=true的物资需要立即搬运到室内或有屋顶的区域",
+                    "[响应字段]totalCount(总物资数)、exposedCount(露天数)、deterioratingCount(恶化中)、items(详细列表)"
+                },
+                Category = "query"
+            },
+            // ==================== 生产系统 ====================
+            ["get_workbench_recipes"] = new CommandDefinition
+            {
+                Name = "get_workbench_recipes",
+                Description = "获取工作台可用配方列表",
+                RequiredParams = new[] { "thingId" },
+                Hints = new[]
+                {
+                    "[参数thingId]工作台建筑ID（从get_production_buildings获取）",
+                    "[返回内容]配方列表，包含产品、原料、技能需求、研究前置等",
+                    "[用途]了解工作台能生产什么物品",
+                    "[配方字段]defName(ID)、label(名称)、workAmount(工作量)、products(产品)、ingredients(原料)",
+                    "[技能需求]skillRequirements显示需要的技能等级",
+                    "[可用性]availableNow表示配方是否已解锁",
+                    "[响应字段]recipeCount(配方数)、recipes(配方列表)"
+                },
+                Category = "production"
+            },
+            ["get_workbench_bills"] = new CommandDefinition
+            {
+                Name = "get_workbench_bills",
+                Description = "获取工作台当前生产账单（任务）",
+                RequiredParams = new[] { "thingId" },
+                Hints = new[]
+                {
+                    "[参数thingId]工作台建筑ID",
+                    "[返回内容]当前账单列表，包含重复模式、暂停状态、进度等",
+                    "[用途]查看工作台正在生产什么",
+                    "[重复模式]Forever(永远)、RepeatCount(重复N次)、TargetCount(目标数量)",
+                    "[存储模式]storeMode: BestStockpile(最佳储存)、DropOnFloor(放地上)",
+                    "[暂停状态]paused=true时账单不会被执行",
+                    "[进度]currentCount/targetCount显示目标完成进度",
+                    "[响应字段]billCount(账单数)、bills(账单详情列表)"
+                },
+                Category = "production"
+            },
+
+            // ==================== 医疗系统 ====================
+            ["get_medical_care"] = new CommandDefinition
+            {
+                Name = "get_medical_care",
+                Description = "获取殖民者医疗护理设置（护理级别、自疗、药物政策）",
+                RequiredParams = new[] { "pawnId" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[医疗级别]medCareLevel 0-4: 0=无护理, 1=无药物, 2=草药, 3=普通药物, 4=最佳",
+                    "[自疗]selfTend=true允许殖民者自己处理伤口",
+                    "[药物政策]drugPolicy包含当前分配的药物政策信息",
+                    "[生存关键]低医疗级别可能导致重伤殖民者得不到及时治疗",
+                    "[响应字段]medCareLevel、medCareLabel、selfTend、drugPolicy"
+                },
+                Category = "medical"
+            },
+            ["set_medical_care"] = new CommandDefinition
+            {
+                Name = "set_medical_care",
+                Description = "设置殖民者医疗护理级别",
+                RequiredParams = new[] { "pawnId", "medCareLevel" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[参数medCareLevel]0=无护理, 1=无药物(接受治疗), 2=草药或更差, 3=普通药物或更差, 4=最佳医疗",
+                    "[建议]重要殖民者设置为4(最佳)，普通殖民者设置2-3",
+                    "[紧急情况]战斗前检查并提升医疗级别",
+                    "[响应字段]success、oldLevel、newLevel、newLabel"
+                },
+                Category = "medical"
+            },
+            ["set_self_tend"] = new CommandDefinition
+            {
+                Name = "set_self_tend",
+                Description = "设置殖民者是否允许自疗",
+                RequiredParams = new[] { "pawnId", "allowed" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[参数allowed]true=允许自疗, false=禁止自疗",
+                    "[注意事项]医生殖民者应该允许自疗以便治疗自己",
+                    "[风险]非医生自疗效果差，可能留下疤痕",
+                    "[响应字段]success、oldSelfTend、newSelfTend"
+                },
+                Category = "medical"
+            },
+            ["get_drug_policy"] = new CommandDefinition
+            {
+                Name = "get_drug_policy",
+                Description = "获取殖民者药物政策详情",
+                RequiredParams = new[] { "pawnId" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[返回内容]药物政策名称、药物列表、服用条件",
+                    "[药物信息]每种药物的defName、label、服用频率、触发条件",
+                    "[触发条件]moodThreshold(心情阈值)、expectationThreshold(期望阈值)",
+                    "[成瘾风险]某些药物有成瘾风险，需要监控使用",
+                    "[响应字段]policyId、label、drugCount、drugs列表"
+                },
+                Category = "medical"
+            },
+
+            // ==================== 通知系统 ====================
+            ["get_notifications"] = new CommandDefinition
+            {
+                Name = "get_notifications",
+                Description = "获取游戏通知列表(Letter信件/Message消息)，支持增量查询",
+                OptionalParams = new[] { "sinceId", "onlyNew", "limit" },
+                Hints = new[]
+                {
+                    "[参数sinceId]获取此ID之后的通知，用于增量查询",
+                    "[参数onlyNew]true=仅返回未读通知",
+                    "[参数limit]最大返回数量(1-200，默认50)",
+                    "[通知类型]letter-右下角可点击通知(袭击/交易/任务)",
+                    "[通知类型]message-左上角临时提示(殖民者状态)",
+                    "[响应字段]notifications数组、count、lastId、stats统计"
+                },
+                Category = "notification"
+            },
+            ["mark_all_notifications_read"] = new CommandDefinition
+            {
+                Name = "mark_all_notifications_read",
+                Description = "标记所有通知为已读",
+                Hints = new[]
+                {
+                    "[用途]批量清除未读状态",
+                    "[响应字段]success"
+                },
+                Category = "notification"
+            },
+            ["clear_notifications"] = new CommandDefinition
+            {
+                Name = "clear_notifications",
+                Description = "清除所有已收集的通知",
+                Hints = new[]
+                {
+                    "[用途]清空通知队列，释放内存",
+                    "[注意]清除后无法恢复历史通知",
+                    "[响应字段]success"
+                },
+                Category = "notification"
+            },
+            ["get_alerts"] = new CommandDefinition
+            {
+                Name = "get_alerts",
+                Description = "获取当前活动的警报列表",
+                Hints = new[]
+                {
+                    "[警报类型]饥饿、健康、电力不足、温度异常、需要研究等",
+                    "[优先级]Critical(紧急)>High(高)>Medium(中)>Low(低)",
+                    "[处理建议]Critical和High警报需要优先处理",
+                    "[culprits]相关目标列表，如受影响的殖民者",
+                    "[响应字段]alerts数组、count"
+                },
+                Category = "notification"
+            },
+
+            // ==================== 殖民者控制 ====================
+            ["draft_pawn"] = new CommandDefinition
+            {
+                Name = "draft_pawn",
+                Description = "征召殖民者进入战斗状态",
+                RequiredParams = new[] { "pawnId" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[效果]殖民者将进入征召状态，可以接受攻击命令",
+                    "[自动开火]默认启用FireAtWill",
+                    "[限制]昏迷、休眠中的殖民者无法征召",
+                    "[响应字段]success、wasDrafted、nowDrafted、fireAtWill"
+                },
+                Category = "pawn_control"
+            },
+            ["undraft_pawn"] = new CommandDefinition
+            {
+                Name = "undraft_pawn",
+                Description = "解除殖民者的征召状态",
+                RequiredParams = new[] { "pawnId" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[效果]殖民者退出战斗状态，恢复日常工作",
+                    "[响应字段]success、wasDrafted、nowDrafted"
+                },
+                Category = "pawn_control"
+            },
+            ["set_fire_at_will"] = new CommandDefinition
+            {
+                Name = "set_fire_at_will",
+                Description = "设置殖民者是否自动开火",
+                RequiredParams = new[] { "pawnId", "fireAtWill" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[参数fireAtWill]true=自动开火, false=不开火(需要手动指定目标)",
+                    "[限制]仅对已征召的殖民者有效",
+                    "[响应字段]success、wasFireAtWill、nowFireAtWill"
+                },
+                Category = "pawn_control"
+            },
+            ["get_timetable"] = new CommandDefinition
+            {
+                Name = "get_timetable",
+                Description = "获取殖民者的24小时日程安排",
+                RequiredParams = new[] { "pawnId" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[返回内容]24小时日程表，每小时对应一种安排",
+                    "[安排类型]Anything(任意)、Sleep(睡眠)、Meditate(冥想)",
+                    "[响应字段]timetable数组、currentHour、currentAssignment"
+                },
+                Category = "pawn_control"
+            },
+            ["set_timetable"] = new CommandDefinition
+            {
+                Name = "set_timetable",
+                Description = "设置殖民者单个小时的日程安排",
+                RequiredParams = new[] { "pawnId", "hour", "assignment" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[参数hour]小时(0-23)",
+                    "[参数assignment]安排类型: Anything/Sleep/Meditate",
+                    "[示例]设置22点睡眠: hour=22, assignment=Sleep",
+                    "[响应字段]success、oldAssignment、newAssignment"
+                },
+                Category = "pawn_control"
+            },
+            ["set_timetable_range"] = new CommandDefinition
+            {
+                Name = "set_timetable_range",
+                Description = "批量设置殖民者的日程安排",
+                RequiredParams = new[] { "pawnId", "startHour", "endHour", "assignment" },
+                Hints = new[]
+                {
+                    "[参数pawnId]殖民者ID",
+                    "[参数startHour]开始小时(0-23)",
+                    "[参数endHour]结束小时(0-23)",
+                    "[参数assignment]安排类型: Anything/Sleep/Meditate",
+                    "[示例]设置22:00-06:00为睡眠: startHour=22, endHour=6, assignment=Sleep",
+                    "[响应字段]success、hoursChanged"
+                },
+                Category = "pawn_control"
+            },
+            ["get_time_assignments"] = new CommandDefinition
+            {
+                Name = "get_time_assignments",
+                Description = "获取所有可用的时间安排类型",
+                Hints = new[]
+                {
+                    "[返回内容]所有TimeAssignmentDef列表",
+                    "[常见类型]Anything(任意工作)、Sleep(强制睡眠)、Meditate(冥想)",
+                    "[DLC]Meditate需要Royalty DLC",
+                    "[响应字段]assignments数组、count"
+                },
+                Category = "pawn_control"
+            },
+            ["get_use_work_priorities"] = new CommandDefinition
+            {
+                Name = "get_use_work_priorities",
+                Description = "查询是否启用了手动工作优先级模式",
+                Hints = new[]
+                {
+                    "[重要性]必须启用此模式后，set_work_priority 命令才会生效",
+                    "[默认值]游戏默认为false，所有殖民者使用默认优先级3",
+                    "[响应字段]useWorkPriorities(true/false)、description"
+                },
+                Category = "work_control"
+            },
+            ["set_use_work_priorities"] = new CommandDefinition
+            {
+                Name = "set_use_work_priorities",
+                Description = "设置是否启用手动工作优先级模式",
+                RequiredParams = new[] { "enabled" },
+                Hints = new[]
+                {
+                    "[参数enabled]true启用/false禁用",
+                    "[使用场景]首次使用 set_work_priority 前必须调用此命令启用",
+                    "[效果]启用后可以设置每个殖民者的工作优先级(1-4)",
+                    "[响应字段]useWorkPriorities、previousValue、changed、message"
+                },
+                Category = "work_control"
+            },
+
             ["get_item_by_def"] = new CommandDefinition
             {
                 Name = "get_item_by_def",
@@ -374,74 +687,109 @@ namespace RimWorldAI.Core
             },
 
             // ==================== 建筑分类查询 ====================
+            ["get_buildings"] = new CommandDefinition
+            {
+                Name = "get_buildings",
+                Description = "获取建筑列表（按类别筛选）",
+                OptionalParams = new[] { "category" },
+                Hints = new[]
+                {
+                    "[参数category]类别: production(生产)、power(电力)、defense(防御)、storage(储存)、furniture(家具)、all(全部-默认)",
+                    "[生产建筑]TableButcher(屠宰台)、TableStove(灶台)、CraftingSpot(手工点)、Stonecutter(切石机)",
+                    "[电力建筑]SolarGenerator(太阳能)、WindTurbine(风力)、Battery(电池)、Geothermal(地热)",
+                    "[防御建筑]MiniTurret(炮塔)、Sandbag(沙袋)、SpikeTrap(尖刺陷阱)",
+                    "[储存建筑]Shelf(货架)、EquipmentRack(武器架)",
+                    "[家具]Bed(床)、Table(桌子)、Chair(椅子)",
+                    "[响应字段]category、totalCount、types(按defName分组的建筑列表)"
+                },
+                Category = "query"
+            },
+            // 兼容旧命令（重定向到 get_buildings）
             ["get_production_buildings"] = new CommandDefinition
             {
                 Name = "get_production_buildings",
-                Description = "获取所有生产建筑(工作台等，按类型细分)",
+                Description = "获取所有生产建筑(兼容命令，建议使用get_buildings?category=production)",
                 Hints = new[]
                 {
-                    "[建筑类型]TableButcher(屠宰台)、TableStove(灶台)、CraftingSpot(手工点)、Stonecutter(切石机)",
-                    "[电力需求]高级工作台需要电力连接才能运行",
-                    "[工作分配]殖民者需要被分配相关工作才能使用工作台",
-                    "[效率因素]工作台速度受操作者技能影响",
-                    "[响应字段]buildingId、defName、powerConsumption(耗电)、position、currentBill(当前任务)"
+                    "[建议]使用 get_buildings?category=production 替代",
+                    "[建筑类型]TableButcher(屠宰台)、TableStove(灶台)、CraftingSpot(手工点)、Stonecutter(切石机)"
                 },
                 Category = "query"
             },
             ["get_power_buildings"] = new CommandDefinition
             {
                 Name = "get_power_buildings",
-                Description = "获取所有电力建筑(发电机/电池等，按类型细分)",
+                Description = "获取所有电力建筑(兼容命令，建议使用get_buildings?category=power)",
                 Hints = new[]
                 {
-                    "[发电类型]SolarGenerator(太阳能-白天)、WindTurbine(风力-全天)、FueledGenerator(燃料-稳定)、Geothermal(地热-稳定高功率)",
-                    "[储能设备]Battery(电池)储存多余电力，夜间使用",
-                    "[电网系统]建筑通过电缆连接，电缆需要金属建造",
-                    "[功率平衡]发电量>耗电量才能稳定运行，否则会停电",
-                    "[响应字段]buildingId、defName、powerOutput(发电量)、storedEnergy(储电量)、position"
+                    "[建议]使用 get_buildings?category=power 替代",
+                    "[发电类型]SolarGenerator(太阳能)、WindTurbine(风力)、Geothermal(地热)"
                 },
                 Category = "query"
             },
             ["get_defense_buildings"] = new CommandDefinition
             {
                 Name = "get_defense_buildings",
-                Description = "获取所有防御建筑(炮塔/陷阱/沙袋等，按类型细分)",
+                Description = "获取所有防御建筑(兼容命令，建议使用get_buildings?category=defense)",
                 Hints = new[]
                 {
-                    "[炮塔类型]MiniTurret(小型炮塔)、AutoTurret(自动炮塔)、Mortar(迫击炮)",
-                    "[掩体系统]Sandbag(沙袋)、Barricade(路障)提供75%掩护加成",
-                    "[陷阱系统]SpikeTrap(尖刺陷阱)、IEDTrap(爆炸陷阱)对敌人造成伤害",
-                    "[电力需求]炮塔需要电力和弹药才能运作",
-                    "[响应字段]buildingId、defName、powerConsumption、ammoCount(弹药)、position"
+                    "[建议]使用 get_buildings?category=defense 替代",
+                    "[防御类型]MiniTurret(炮塔)、Sandbag(沙袋)、SpikeTrap(陷阱)"
                 },
                 Category = "query"
             },
             ["get_storage_buildings"] = new CommandDefinition
             {
                 Name = "get_storage_buildings",
-                Description = "获取所有储存建筑(货架等，按类型细分)",
+                Description = "获取所有储存建筑(兼容命令，建议使用get_buildings?category=storage)",
                 Hints = new[]
                 {
-                    "[储存类型]Shelf(货架)、EquipmentRack(武器架)",
-                    "[容量优势]货架比地面堆放更整洁，容量更大",
-                    "[分类储存]可以设置只存放特定类型物品",
-                    "[响应字段]buildingId、defName、storageCapacity(容量)、currentItems(当前物品)、position"
+                    "[建议]使用 get_buildings?category=storage 替代",
+                    "[储存类型]Shelf(货架)、EquipmentRack(武器架)"
                 },
                 Category = "query"
             },
             ["get_furniture"] = new CommandDefinition
             {
                 Name = "get_furniture",
-                Description = "获取所有家具(床/椅子/桌子等，按类型细分)",
+                Description = "获取所有家具(兼容命令，建议使用get_buildings?category=furniture)",
                 Hints = new[]
                 {
-                    "[必需家具]Bed(床-睡眠)、Table(桌子-进餐)、Stool/Chair(椅子-坐着进餐)",
-                    "[舒适度]家具舒适度(Comfort)影响殖民者休息质量",
-                    "[美观度]装饰品增加房间美观度，提高殖民者心情",
-                    "[品质系统]家具品质(Awful到Legendary)影响效果",
-                    "[响应字段]buildingId、defName、quality(品质)、comfort(舒适度)、position"
+                    "[建议]使用 get_buildings?category=furniture 替代",
+                    "[家具类型]Bed(床)、Table(桌子)、Chair(椅子)"
                 },
                 Category = "query"
+            },
+            ["get_research_status"] = new CommandDefinition
+            {
+                Name = "get_research_status",
+                Description = "获取研究系统状态(当前项目/可用项目/已完成项目)",
+                Hints = new[]
+                {
+                    "[研究台]需要建造研究台(TableResearch)才能进行研究",
+                    "[当前项目]currentProject字段显示正在研究的项目，null表示未选择",
+                    "[进度显示]progress为0-1之间的浮点数，表示完成百分比",
+                    "[可用项目]availableProjects列出所有前置条件已满足的项目",
+                    "[已完成]completedProjects列出所有已完成的研究",
+                    "[设置项目]使用set_research_project命令设置研究项目"
+                },
+                Category = "query"
+            },
+            ["set_research_project"] = new CommandDefinition
+            {
+                Name = "set_research_project",
+                Description = "设置当前研究项目",
+                RequiredParams = new[] { "projectDefName" },
+                Hints = new[]
+                {
+                    "[参数]projectDefName: 研究项目的defName，如Electricity(电力)、Batteries(电池)、SolarPanels(太阳能板)",
+                    "[前置条件]研究项目的前置条件必须已完成",
+                    "[查看可用]使用get_research_status查看availableProjects列表",
+                    "[常见项目]Electricity(电力基础)、Batteries(电池)、SolarPanels(太阳能板)、GunTurrets(炮塔)",
+                    "[切换研究]可以随时切换研究项目，已研究的进度会保留",
+                    "[错误情况]如果项目不存在、已完成或前置条件未满足，会返回错误信息"
+                },
+                Category = "control"
             },
             ["get_building_by_def"] = new CommandDefinition
             {
@@ -708,6 +1056,78 @@ namespace RimWorldAI.Core
                 },
                 Category = "query"
             },
+
+            // ==================== 区域管理控制命令 ====================
+            ["create_area"] = new CommandDefinition
+            {
+                Name = "create_area",
+                Description = "创建允许区域（用于限制角色活动范围）",
+                RequiredParams = new[] { "name" },
+                OptionalParams = new[] { "cells" },
+                Hints = new[]
+                {
+                    "[参数name]区域名称",
+                    "[参数cells]坐标数组JSON，格式：[{\"x\":100,\"z\":100},{\"x\":101,\"z\":100}]",
+                    "[用途]创建区域后可用于限制殖民者/动物的活动范围",
+                    "[工作流]create_area→set_pawn_area_restriction",
+                    "[响应字段]success、areaId(新区域ID)、name、cellCount"
+                },
+                Category = "control"
+            },
+            ["delete_area"] = new CommandDefinition
+            {
+                Name = "delete_area",
+                Description = "删除允许区域",
+                RequiredParams = new[] { "areaId" },
+                Hints = new[]
+                {
+                    "[参数areaId]要删除的区域ID，从get_areas获取",
+                    "[注意]删除后角色将不受该区域限制",
+                    "[响应字段]success、message"
+                },
+                Category = "control"
+            },
+            ["rename_area"] = new CommandDefinition
+            {
+                Name = "rename_area",
+                Description = "重命名允许区域",
+                RequiredParams = new[] { "areaId", "name" },
+                Hints = new[]
+                {
+                    "[参数areaId]区域ID",
+                    "[参数name]新名称",
+                    "[响应字段]success、newName"
+                },
+                Category = "control"
+            },
+            ["add_cells_to_area"] = new CommandDefinition
+            {
+                Name = "add_cells_to_area",
+                Description = "向区域添加格子",
+                RequiredParams = new[] { "areaId", "cells" },
+                Hints = new[]
+                {
+                    "[参数areaId]目标区域ID",
+                    "[参数cells]坐标数组JSON，格式：[{\"x\":100,\"z\":100}]",
+                    "[限制]只能添加可行走的格子",
+                    "[响应字段]success、addedCount、totalCells"
+                },
+                Category = "control"
+            },
+            ["remove_cells_from_area"] = new CommandDefinition
+            {
+                Name = "remove_cells_from_area",
+                Description = "从区域移除格子",
+                RequiredParams = new[] { "areaId", "cells" },
+                Hints = new[]
+                {
+                    "[参数areaId]目标区域ID",
+                    "[参数cells]要移除的坐标数组JSON",
+                    "[响应字段]success、removedCount、totalCells"
+                },
+                Category = "control"
+            },
+
             ["get_resources"] = new CommandDefinition
             {
                 Name = "get_resources",
@@ -792,15 +1212,16 @@ namespace RimWorldAI.Core
             ["get_work_types"] = new CommandDefinition
             {
                 Name = "get_work_types",
-                Description = "获取所有工作类型",
+                Description = "获取工作类型列表",
+                OptionalParams = new[] { "filter" },
                 Hints = new[]
                 {
+                    "[参数filter]筛选模式: all(所有类型-默认) 或 supported(仅trigger_work支持的类型)",
                     "[工作类型列表]Firefighter、Patient、Doctor、BasicWorker、Warden、Handling、Cooking、Hunting、Construction、Repair、Growing、Mining、PlantCutting、Smithing、Tailoring、Art、Hauling、Cleaning、Research",
-                    "[完整列表]Firefighter/Patient/Doctor/BasicWorker/Warden/Handling/Cooking/Hunting/Construction/Repair/Growing/Mining/PlantCutting/Smithing/Tailoring/Art/Hauling/Cleaning/Research",
                     "[工作说明]Firefighter(灭火)、Patient(就医)、Doctor(治疗病人)、Warden(管理囚犯)、Handling(驯兽)",
                     "[依赖关系]Cooking需要灶台，Research需要研究台，Smithing需要锻造台",
                     "[紧急程度]Firefighter/Doctor/Patient应始终有人可做",
-                    "[响应字段]workTypes(所有工作类型及描述)"
+                    "[响应字段]filter、count、workTypes(工作类型列表)"
                 },
                 Category = "work"
             },
@@ -872,7 +1293,13 @@ namespace RimWorldAI.Core
                     "[参数category]类别过滤：furniture(家具)、production(生产)、power(电力)、defense(防御)、temperature(温控)",
                     "[返回内容]可建造的建筑及其defName、成本、描述",
                     "[defName用途]用于place_blueprint命令放置蓝图",
-                    "[响应字段]buildings(建筑列表)、category、defName、cost(建造成本)"
+                    "[响应字段]buildings(建筑列表)、category、defName、cost(建造成本)",
+                    // === 新增：室内外分类 ===
+                    "[必须室内]Bed(床)、TableBase(餐桌)、Chair(椅子)、工作台、研究台、储存区",
+                    "[必须室外]SolarGenerator(太阳能)、WindTurbine(风车)、种植区、陷阱",
+                    "[墙内设施]Cooler(冷却器)、Heater(加热器)、Vent(通风口)需要墙或室内",
+                    "[门的位置]Door必须放在墙上，连通室内外或房间之间",
+                    "[建造原则]先建墙围出房间，再放室内设施，最后放室外设施"
                 },
                 Category = "query"
             },
@@ -908,17 +1335,6 @@ namespace RimWorldAI.Core
                     "[响应字段]success、assignedColonists(被分配的殖民者)、designationResult(标记结果)"
                 },
                 Category = "control"
-            },
-            ["get_supported_work_types"] = new CommandDefinition
-            {
-                Name = "get_supported_work_types",
-                Description = "获取所有支持的工作类型列表（用于trigger_work命令）",
-                Hints = new[]
-                {
-                    "[用途]查看trigger_work命令支持的所有工作类型",
-                    "[响应字段]workTypes(工作类型列表及详细说明)"
-                },
-                Category = "work"
             },
 
             // ==================== 控制命令 ====================
@@ -1031,130 +1447,192 @@ namespace RimWorldAI.Core
                     "[新工作流]建造房间时：1.get_room_boundary获取边界 2.对missingCells逐个调用place_blueprint",
                     "[旧工作流-废弃]不再需要自己计算16面墙的坐标，使用get_room_boundary一次性获取",
                     "[建造流程]place_blueprint → 确保有材料 → trigger_work(Construction)",
-                    "[建筑规划]优先建造顺序：卧室(休息)→厨房(食物)→餐厅(进餐)→防御工事",
                     "[材料选择]木材(快速建造但易燃)、钢铁(均衡)、塑钢(坚固但稀有)",
                     "[常见错误]材料不足时蓝图不会建造，用get_materials检查库存",
-                    "[响应字段]success、blueprintId、position、materialsNeeded"
+                    "[响应字段]success、blueprintId、position、materialsNeeded",
+                    // === 新增：室内优先原则 ===
+                    "[室内优先-关键]所有设施必须放在室内！床/工作台/研究台在室外是严重错误！",
+                    "[建造顺序-重要]先建封闭房间，再放家具！不要先放床再考虑建墙！",
+                    "[正确流程]1.选址 → 2.建造封闭房间(get_room_boundary+build=true) → 3.等建成 → 4.放家具",
+                    "[错误流程]❌ 先放床在室外 → 再考虑建墙 → 结果：殖民者睡在露天",
+                    "[设施分类]床(Bed)/餐桌(Table)/工作台必须在室内，只有太阳能/风车在室外",
+                    "[室内好处]室内有温度控制(不冻死/热死)、不受天气影响、提升心情",
+                    "[建造优先级]卧室(5x5+) → 餐厅(7x7+) → 厨房(5x5+) → 工作室(7x7+) → 防御",
+                    "[不要省空间]房间宁可建大也不要太小，太小无法使用且殖民者会不高兴"
                 },
                 Category = "control"
             },
 
-            // ==================== ESDF 和 Voronoi 地图分析 ====================
+            // ==================== 地图分析与选址工具 ====================
+            // 选址工作流: get_esdf_map(了解地形) → get_voronoi_map(骨架规划) → find_build_locations(找位置) → get_room_boundary(建造)
+
             ["get_esdf_map"] = new CommandDefinition
             {
                 Name = "get_esdf_map",
-                Description = "获取ESDF距离场地图（每个格子到最近障碍物的距离和障碍物类型）",
+                Description = "ESDF距离场地图 - 分析地图开阔程度，找适合建造的安全区域",
                 Hints = new[]
                 {
-                    "[ESDF概念]Euclidean Signed Distance Function，计算每个格子到最近障碍物的距离",
-                    "[AI用途]建造时保持安全间距，工作台离墙1格，主走廊保持3格宽",
-                    "[距离值]0=障碍物，1=靠墙，2=窄通道，3+=宽阔区域",
-                    "[安全区域]safeAreas返回距离>=3的大块区域，适合放置重要建筑",
-                    "[障碍物分布]obstacleTypeDistribution返回各类型障碍物数量（terrain/building/thing）",
-                    "[障碍物样本]sampleObstacles返回各类型障碍物的代表样本",
-                    "[响应字段]summary(统计)、distanceDistribution(距离分布)、obstacleTypeDistribution(障碍物类型分布)、sampleObstacles(障碍物样本)、safeAreas(安全区域列表)"
+                    // === 核心用途 ===
+                    "[核心用途]分析地图每个格子到最近障碍物的距离，找开阔安全的建造区域",
+                    "[选址第一步]新建基地时先调用此命令，了解哪里有足够空间",
+                    // === 概念解释 ===
+                    "[ESDF]Euclidean Signed Distance Field，距离值越大越开阔安全",
+                    "[距离含义]0=障碍物本身，1=紧贴障碍，2=窄通道，3+=可建造，5+=宽阔",
+                    // === 返回数据 ===
+                    "[safeAreas]返回距离>=3的连通区域列表，每个区域含边界、中心、格子数",
+                    "[obstacleTypes]返回障碍物类型分布：terrain(地形)、building(建筑)、thing(物品)",
+                    "[distanceDistribution]返回各距离值的格子数量统计",
+                    // === 使用场景 ===
+                    "[新基地选址]找distanceDistribution中3+值多的区域",
+                    "[室内规划]检查safeAreas找到能放工作台的开阔位置",
+                    "[走廊规划]距离2-3的区域适合做走廊，避免浪费宽阔空间"
                 },
                 Category = "map"
             },
             ["get_voronoi_map"] = new CommandDefinition
             {
                 Name = "get_voronoi_map",
-                Description = "获取Voronoi骨架地图（基地主干道和区域划分，含障碍物和房间信息）",
+                Description = "Voronoi骨架地图 - 提取地图主干道和区域划分，规划基地布局",
                 Hints = new[]
                 {
-                    "[Voronoi概念]从障碍物分布提取地图骨架，找到离障碍物最远的路径",
-                    "[骨架节点]nodes是ESDF局部最大值点，代表最安全的位置",
-                    "[节点障碍物]每个节点包含nearbyObstacles，显示8方向搜索到的障碍物（类型/方向/距离）",
-                    "[骨架边]edges连接相邻节点，形成主干道",
-                    "[区域房间]regions包含roomInfo，显示是否室内/房间角色/区域内建筑类型",
-                    "[AI用途]沿骨架建造主走廊，骨架划分的区域适合规划功能区",
-                    "[响应字段]nodes(含nearbyObstacles)、edges、regions(含roomInfo)、summary(统计)"
+                    // === 核心用途 ===
+                    "[核心用途]提取地图骨架结构，规划主走廊位置和功能分区",
+                    "[选址第二步]了解地形后，用此命令规划基地主干道",
+                    // === 概念解释 ===
+                    "[骨架概念]Voronoi骨架是离所有障碍物最远的点连成的线，即最佳主走廊",
+                    "[节点]nodes是ESDF局部最大值点，骨架的关键交叉点，最安全的位置",
+                    "[边]edges连接节点形成骨架网络，沿边建造走廊最安全",
+                    // === 返回数据 ===
+                    "[nodes]骨架节点列表，每个节点含坐标、ESDF距离、8方向障碍物信息",
+                    "[edges]骨架边列表，连接两个节点，表示可通行的安全路径",
+                    "[regions]区域划分，骨架将地图分成多个区域，每个区域含房间信息",
+                    // === 使用场景 ===
+                    "[主走廊]沿edges放置地板，形成基地主通道",
+                    "[功能分区]不同regions可规划为不同功能区(卧室区/工作区/储存区)",
+                    "[节点利用]nodes位置适合放重要建筑(如研究台、灶台)"
                 },
                 Category = "map"
             },
             ["find_build_locations"] = new CommandDefinition
             {
                 Name = "find_build_locations",
-                Description = "查找适合建造的位置（选址工具：基于ESDF安全距离）",
+                Description = "选址工具 - 找到适合建造的具体位置坐标",
                 OptionalParams = new[] { "buildingDef", "minDistance", "preferIndoor", "limit" },
                 Hints = new[]
                 {
-                    "[核心用途]选址工具：找到安全的建造位置，作为get_room_boundary的center参数",
-                    "[参数buildingDef]建筑定义名（可选），用于未来扩展",
-                    "[参数minDistance]离墙最小距离，默认1（工作台建议1，床可0）",
-                    "[参数preferIndoor]是否优先室内，默认true",
-                    "[参数limit]返回数量限制，默认10，最大100",
-                    "[工作流]1.find_build_locations选址 → 2.get_room_boundary(center,5,5)获取边界 → 3.place_blueprint",
-                    "[评分规则]距离越远越好，室内加分",
-                    "[最近障碍物]nearestObstacle返回距离最近的障碍物详情（类型/名称/坐标）",
-                    "[响应字段]locations(位置列表，每个位置含x/z坐标)、totalCandidates(总候选数)"
+                    // === 核心用途 ===
+                    "[核心用途]基于ESDF安全距离，返回N个最佳建造位置的坐标",
+                    "[选址第三步]规划好布局后，用此命令找具体建造点",
+                    // === 参数说明 ===
+                    "[minDistance]离障碍物最小距离，默认1。工作台/床用1，走廊用2，广场用3",
+                    "[preferIndoor]优先室内，默认true。室内建筑(床/工作台)保持true，室外建筑(太阳能)设false",
+                    "[limit]返回位置数量，默认10。需要更多选项时增大",
+                    // === 返回数据 ===
+                    "[locations]位置列表，每个位置含x/z坐标、ESDF距离、室内/室外标记",
+                    "[nearestObstacle]每个位置最近的障碍物信息(类型/名称/坐标)",
+                    // === 使用场景 ===
+                    "[房间中心]返回的坐标直接用作get_room_boundary的center_x/center_z",
+                    "[工作台位置]minDistance=1,preferIndoor=true，找靠墙但不贴墙的位置",
+                    "[室外建筑]preferIndoor=false，找室外开阔位置放太阳能/风车",
+                    // === 工作流 ===
+                    "[工作流]find_build_locations → 返回坐标 → get_room_boundary(坐标,宽,高,build=true)"
                 },
                 Category = "map"
             },
             ["get_room_boundary"] = new CommandDefinition
             {
                 Name = "get_room_boundary",
-                Description = "获取房间边界建造状态（核心命令：一次性返回矩形边界的所有坐标和状态）",
+                Description = "房间建造核心命令 - 获取边界状态或自动建造房间",
                 RequiredParams = new[] { "center_x", "center_z", "width", "height" },
+                OptionalParams = new[] { "build", "wallDef", "stuffDef" },
                 Hints = new[]
                 {
-                    "[核心用途]建造房间的核心命令，解决AI\"漏墙\"问题",
-                    "[参数]center_x/center_z=房间中心坐标，width/height=房间内部尺寸",
-                    "[示例]5x5房间(16面墙)：get_room_boundary(100,100,5,5) 返回16个边界格子",
-                    "[示例]7x5房间(22面墙)：get_room_boundary(100,100,7,5) 返回22个边界格子",
-                    "[返回]rect=矩形范围，edgeCells=所有边界格子状态，missingCells=需要建造的位置",
-                    "[状态]empty=空地(需放蓝图)，built=已建成，blueprint=已放蓝图，frame=建造中",
-                    "[工作流]1.调用此命令 → 2.对missingCells逐个调用place_blueprint(\"Wall\",x,z) → 3.重复直到completionPercent=100",
-                    "[RimWorld原理]学习游戏BaseGen的CellRect.EdgeCells，预先计算边界，不需要检测封闭性",
-                    "[响应字段]rect、totalEdgeCells、edgeCells、missingCells、completionPercent"
+                    // === 核心用途 ===
+                    "[核心用途]建造房间的唯一入口命令，自动计算边界位置，避免漏墙",
+                    "[选址最后一步]find_build_locations返回坐标 → 此命令建造房间",
+                    // === 参数说明 ===
+                    "[center_x/center_z]房间中心坐标，从find_build_locations获取",
+                    "[width/height]房间内部尺寸(不含墙)，最小5x5，太小无法使用！",
+                    "[build]true=自动放置蓝图建造，false=只返回边界状态",
+                    "[stuffDef]材料: WoodLog(木材)、Steel(钢铁)、Plasteel(塑钢)",
+                    // === 返回数据 ===
+                    "[completionPercent]完成百分比，100%表示房间已建成",
+                    "[missingCells]需要建造的位置列表，build=true时自动处理",
+                    "[edgeCells]所有边界格子的状态: empty/built/blueprint/frame",
+                    // === 房间尺寸指南 ===
+                    "[卧室]5x5单人间，7x7双人间",
+                    "[餐厅]7x7起步，9x9更舒适",
+                    "[厨房]5x5起步，放灶台+备料台",
+                    "[工作室]7x7起步，放多个工作台",
+                    "[冷库]7x7起步，储存大量食物",
+                    "[走廊]宽度3格，方便双向通行"
                 },
                 Category = "map"
             },
             ["scan_area"] = new CommandDefinition
             {
                 Name = "scan_area",
-                Description = "批量扫描矩形区域内部（替代多次get_cell_info调用，一次性返回区域全景）",
+                Description = "区域扫描 - 一次性获取矩形区域所有格子状态",
                 RequiredParams = new[] { "center_x", "center_z", "width", "height" },
                 Hints = new[]
                 {
-                    "[核心用途]一次性获取区域全景，替代N次get_cell_info调用",
-                    "[参数]center_x/center_z=区域中心坐标，width/height=扫描范围",
-                    "[示例]scan_area(100,100,10,10) 扫描10x10区域，返回100个格子信息",
-                    "[返回]cells=所有格子状态，buildings=建筑列表，blueprints=蓝图，items=物品",
-                    "[格子状态]status=empty/built/blueprint/frame，terrain=地形，passable=是否可通行",
-                    "[效率]1次scan_area = 100次get_cell_info，大幅减少API调用",
-                    "[工作流]选址时：scan_area → 检查passableCells和impassableCells → 决定是否建造",
-                    "[响应字段]rect、totalCells、cells、buildings、blueprints、frames、items、terrainStats"
+                    // === 核心用途 ===
+                    "[核心用途]批量扫描区域，一次返回所有格子状态，避免多次API调用",
+                    "[选址辅助]建造前扫描目标区域，确认没有障碍物",
+                    // === 参数说明 ===
+                    "[center_x/center_z]扫描区域中心坐标",
+                    "[width/height]扫描范围，建议不超过20x20(400格)",
+                    // === 返回数据 ===
+                    "[cells]所有格子状态列表，含坐标、地形、是否可通行",
+                    "[buildings]区域内的建筑列表",
+                    "[blueprints]区域内的蓝图列表",
+                    "[items]区域内的物品列表",
+                    "[passableCount/impassableCount]可通行/不可通行格子统计",
+                    // === 使用场景 ===
+                    "[建造前检查]扫描后检查impassableCount，>0说明有障碍",
+                    "[房间规划]扫描计划位置，确认空间足够"
                 },
                 Category = "map"
             },
             ["get_river"] = new CommandDefinition
             {
                 Name = "get_river",
-                Description = "获取河流信息（使用BFS识别连通区域和走向，包含浅水）",
+                Description = "河流信息 - 识别河流位置和走向，规划时避开或利用",
                 RequiredParams = new string[] { },
                 Hints = new[]
                 {
-                    "[BFS算法]使用广度优先搜索识别连通的河流区域（包括河流和浅水）",
-                    "[返回信息]hasRiver是否有河流、totalRiverCells总格数、direction走向(north-south/east-west)",
-                    "[河段信息]segments包含每个河段的边界、中心点、格子数",
-                    "[穿越点]totalFordCells浅滩数量（可穿越河流的点）",
-                    "[AI用途]帮助AI了解地图上的水源分布和河流走向，规划基地时避开河流或利用浅滩"
+                    // === 核心用途 ===
+                    "[核心用途]识别地图上的河流，帮助避开水源或利用浅滩",
+                    "[选址参考]河流边适合种田(土壤湿润)，但不能在河上建墙",
+                    // === 返回数据 ===
+                    "[hasRiver]是否有河流，true/false",
+                    "[direction]河流走向: north-south(南北) 或 east-west(东西)",
+                    "[segments]河段列表，每个河段含边界、中心、格子数",
+                    "[totalFordCells]浅滩数量，浅滩是可以步行穿越河流的点",
+                    // === 使用场景 ===
+                    "[避开河流]规划房间时检查坐标是否在河流segments内",
+                    "[利用浅滩]过河路径规划时优先选择浅滩位置",
+                    "[农田规划]河流附近的土壤通常更肥沃，适合放种植区"
                 },
                 Category = "map"
             },
             ["get_marsh"] = new CommandDefinition
             {
                 Name = "get_marsh",
-                Description = "获取沼泽信息（使用BFS识别连通区域）",
+                Description = "沼泽信息 - 识别沼泽位置，规划时避开",
                 RequiredParams = new string[] { },
                 Hints = new[]
                 {
-                    "[BFS算法]使用广度优先搜索识别连通的沼泽区域",
-                    "[检测条件]地形defName包含Marsh或Swamp",
-                    "[返回信息]hasMarsh是否有沼泽、totalMarshCells总格数、segmentCount区域数量",
-                    "[区域信息]segments包含每个沼泽区域的边界和格子数",
-                    "[AI用途]帮助AI识别沼泽区域，规划基地时避开或利用沼泽"
+                    // === 核心用途 ===
+                    "[核心用途]识别沼泽区域，沼泽移动慢且不能建墙",
+                    "[选址参考]选址时避开沼泽，除非故意用作防御屏障",
+                    // === 返回数据 ===
+                    "[hasMarsh]是否有沼泽，true/false",
+                    "[segments]沼泽区域列表，每个区域含边界和格子数",
+                    "[totalMarshCells]沼泽总格数",
+                    // === 使用场景 ===
+                    "[避开沼泽]get_room_boundary前检查坐标是否在沼泽segments内",
+                    "[防御利用]沼泽会减慢敌人移动，可在沼泽边缘布置防御"
                 },
                 Category = "map"
             }

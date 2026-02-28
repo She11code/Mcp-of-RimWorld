@@ -395,7 +395,81 @@ namespace RimWorldAI.Core
 
                 // ========== 健康 ==========
                 ["healthPercent"] = pawn.health?.summaryHealth?.SummaryHealthPercent ?? 1f,
+
+                // ========== 健康扩展属性 ==========
+                ["canCrawl"] = pawn.health?.CanCrawl ?? false,
+                ["painLevel"] = pawn.health?.hediffSet?.PainTotal ?? 0f,
+                ["bleedRate"] = pawn.health?.hediffSet?.BleedRateTotal ?? 0f,
+                ["canBleed"] = pawn.health?.CanBleed ?? true,
+
+                // ========== 能力统计 ==========
+                ["ticksPerMoveCardinal"] = pawn.TicksPerMoveCardinal,
+                ["ticksPerMoveDiagonal"] = pawn.TicksPerMoveDiagonal,
+                ["psychicSensitivity"] = pawn.GetStatValue(StatDefOf.PsychicSensitivity),
+                ["disabledWorkTags"] = pawn.CombinedDisabledWorkTags.ToString(),
             };
+
+            // ========== 睡眠环境检测（生存关键） ==========
+            var sleepEnv = new Dictionary<string, object>();
+            try
+            {
+                var map = pawn.Map;
+                var bed = pawn.ownership?.OwnedBed;
+                IntVec3 sleepPos = bed?.Position ?? pawn.Position;
+
+                // 是否有床
+                sleepEnv["hasOwnedBed"] = bed != null;
+                if (bed != null)
+                {
+                    sleepEnv["bedDef"] = bed.def?.defName ?? "Unknown";
+                    sleepEnv["bedLabel"] = bed.def?.label ?? "Unknown";
+                    sleepPos = bed.Position;
+                }
+
+                // 床/当前位置
+                sleepEnv["sleepPosition"] = new { x = sleepPos.x, z = sleepPos.z };
+
+                // 是否有屋顶（关键！露天会冻死）
+                bool isRoofed = map != null && map.roofGrid != null && map.roofGrid.Roofed(sleepPos);
+                sleepEnv["isRoofed"] = isRoofed;
+
+                // 是否户外（心理上的户外感）
+                var room = map != null ? sleepPos.GetRoom(map) : null;
+                sleepEnv["isOutdoors"] = room == null || room.PsychologicallyOutdoors || room.TouchesMapEdge;
+
+                // 温度（关键！温度过高/过低会死）
+                float temperature = map != null ? GenTemperature.GetTemperatureForCell(sleepPos, map) : 21f;
+                sleepEnv["temperature"] = temperature;
+
+                // 房间信息（如果有）
+                if (room != null)
+                {
+                    sleepEnv["roomId"] = room.ID;
+                    sleepEnv["roomCellCount"] = room.CellCount;
+                    sleepEnv["openRoofCount"] = room.OpenRoofCount;
+                }
+
+                // 生存威胁警告
+                var warnings = new List<string>();
+                if (!isRoofed && temperature < 0)
+                    warnings.Add("露天低温-会冻死");
+                else if (!isRoofed && temperature < 10)
+                    warnings.Add("露天寒冷-可能生病");
+                if (temperature > 50)
+                    warnings.Add("高温中暑-会热死");
+                else if (temperature > 35)
+                    warnings.Add("高温-可能中暑");
+                if (temperature < -20)
+                    warnings.Add("极寒-会快速冻死");
+
+                sleepEnv["warnings"] = warnings;
+                sleepEnv["isDangerous"] = warnings.Count > 0;
+            }
+            catch (Exception ex)
+            {
+                sleepEnv["error"] = ex.Message;
+            }
+            result["sleepEnvironment"] = sleepEnv;
 
             // ========== 技能信息 ==========
             if (pawn.skills != null && pawn.skills.skills != null)
@@ -485,6 +559,47 @@ namespace RimWorldAI.Core
                         ["curLevel"] = joyNeed.CurLevel,
                         ["curLevelPercentage"] = joyNeed.CurLevelPercentage
                     };
+                }
+
+                // 舒适度
+                var comfortNeed = pawn.needs.TryGetNeed<Need_Comfort>();
+                if (comfortNeed != null)
+                {
+                    needsInfo["comfort"] = new Dictionary<string, object>
+                    {
+                        ["curLevel"] = comfortNeed.CurLevel,
+                        ["curLevelPercentage"] = comfortNeed.CurLevelPercentage,
+                        ["category"] = comfortNeed.CurCategory.ToString()
+                    };
+                }
+
+                // 户外需求
+                var outdoorsNeed = pawn.needs.TryGetNeed<Need_Outdoors>();
+                if (outdoorsNeed != null)
+                {
+                    needsInfo["outdoors"] = new Dictionary<string, object>
+                    {
+                        ["curLevel"] = outdoorsNeed.CurLevel,
+                        ["curLevelPercentage"] = outdoorsNeed.CurLevelPercentage
+                    };
+                }
+
+                // 收集所有化学需求（成瘾相关）
+                var chemicalNeeds = pawn.needs.AllNeeds.Where(n => n.def?.defName?.Contains("Chemical") == true).ToList();
+                if (chemicalNeeds.Count > 0)
+                {
+                    var chemicalList = new List<Dictionary<string, object>>();
+                    foreach (var chemNeed in chemicalNeeds)
+                    {
+                        chemicalList.Add(new Dictionary<string, object>
+                        {
+                            ["defName"] = chemNeed.def.defName,
+                            ["label"] = chemNeed.def.label ?? chemNeed.def.defName,
+                            ["curLevel"] = chemNeed.CurLevel,
+                            ["curLevelPercentage"] = chemNeed.CurLevelPercentage
+                        });
+                    }
+                    needsInfo["chemical"] = chemicalList;
                 }
 
                 result["needs"] = needsInfo;
@@ -1002,6 +1117,8 @@ namespace RimWorldAI.Core
             {
                 info["type"] = "Building";
                 info["buildingInfo"] = GetBuildingSpecificInfo(building);
+                // 添加使用要求
+                info["usageRequirements"] = GetBuildingUsageRequirements(building);
             }
             else if (thing is Pawn pawn)
             {
@@ -1181,6 +1298,70 @@ namespace RimWorldAI.Core
             }
 
             return info;
+        }
+
+        /// <summary>
+        /// 获取建筑使用要求（帮助AI理解建筑需要什么配置才能工作）
+        /// </summary>
+        private static Dictionary<string, object> GetBuildingUsageRequirements(Building building)
+        {
+            if (building == null) return null;
+
+            var def = building.def;
+            var requirements = new Dictionary<string, object>();
+
+            // 1. 检查是否是研究台（需要选择研究项目）
+            // 注意：研究项目状态需要通过单独的 get_research_status 命令查询
+            if (def.defName == "TableResearch" || def.defName.Contains("Research"))
+            {
+                requirements["type"] = "ResearchProject";
+                requirements["status"] = "check_research_status";
+                requirements["hint"] = "需要选择研究项目才能工作，使用 get_research_status 查询当前研究状态";
+                requirements["canConfigureViaAPI"] = false;
+            }
+            // 2. 检查是否需要生产任务（工作台/灶台等）
+            else if (building is RimWorld.IBillGiver billGiver)
+            {
+                int billCount = billGiver.BillStack?.Count ?? 0;
+
+                requirements["type"] = "Bills";
+                requirements["status"] = billCount > 0 ? "configured" : "not_configured";
+                requirements["hint"] = "需要添加生产任务才能工作";
+                requirements["canConfigureViaAPI"] = false;
+                requirements["billCount"] = billCount;
+            }
+            // 3. 检查是否需要电力
+            else if (building.GetComp<CompPowerTrader>() != null)
+            {
+                var powerComp = building.GetComp<CompPowerTrader>();
+                requirements["type"] = "Power";
+                requirements["status"] = powerComp.PowerOn ? "powered" : "not_powered";
+                requirements["hint"] = "需要连接到电网才能工作";
+                requirements["canConfigureViaAPI"] = false;
+                requirements["isPowered"] = powerComp.PowerOn;
+            }
+            // 4. 检查是否是温控设备（需要封闭房间）
+            else if (building.GetComp<CompTempControl>() != null)
+            {
+                var room = building.GetRoom();
+                bool isEnclosed = room != null && room.ProperRoom;
+
+                requirements["type"] = "EnclosedRoom";
+                requirements["status"] = isEnclosed ? "proper_room" : "no_room";
+                requirements["hint"] = "需要放在封闭房间才能有效工作";
+                requirements["canConfigureViaAPI"] = false;
+                requirements["roomTemperature"] = room?.Temperature ?? 0f;
+            }
+            // 5. 其他建筑类型
+            else
+            {
+                requirements["type"] = "None";
+                requirements["status"] = "ready";
+                requirements["hint"] = "建造完成后即可使用";
+                requirements["canConfigureViaAPI"] = true;
+            }
+
+            return requirements;
         }
 
         /// <summary>
@@ -1980,6 +2161,241 @@ namespace RimWorldAI.Core
 
         #endregion
 
+        #region 区域管理 - 创建/删除/修改区域
+
+        /// <summary>
+        /// 创建允许区域
+        /// </summary>
+        public static Dictionary<string, object> CreateAllowedArea(string name, string cellsJson = null)
+        {
+            var map = Find.CurrentMap;
+            if (map == null)
+                return new Dictionary<string, object> { ["error"] = "No current map available" };
+
+            // 检查是否可以创建新区域
+            if (!map.areaManager.CanMakeNewAllowed())
+                return new Dictionary<string, object> { ["error"] = "Maximum allowed areas reached (10)" };
+
+            // 创建区域 - 使用 TryMakeNewAllowed
+            if (!map.areaManager.TryMakeNewAllowed(out var area))
+                return new Dictionary<string, object> { ["error"] = "Failed to create area" };
+
+            // 设置名称 - 使用 RenamableLabel 属性
+            area.RenamableLabel = name;
+
+            // 添加格子
+            int addedCount = 0;
+            if (!string.IsNullOrEmpty(cellsJson))
+            {
+                var cells = ParseCellsList(cellsJson);
+                if (cells != null)
+                {
+                    foreach (var cell in cells)
+                    {
+                        var intVec3 = new IntVec3(cell["x"], 0, cell["z"]);
+                        if (intVec3.InBounds(map))
+                        {
+                            area[intVec3] = true;
+                            addedCount++;
+                        }
+                    }
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["areaId"] = area.ID,
+                ["name"] = area.Label,
+                ["cellCount"] = area.TrueCount,
+                ["addedCount"] = addedCount
+            };
+        }
+
+        /// <summary>
+        /// 删除允许区域
+        /// </summary>
+        public static Dictionary<string, object> DeleteAllowedArea(int areaId)
+        {
+            var map = Find.CurrentMap;
+            if (map == null)
+                return new Dictionary<string, object> { ["error"] = "No current map available" };
+
+            var area = map.areaManager.AllAreas.FirstOrDefault(a => a.ID == areaId);
+            if (area == null)
+                return new Dictionary<string, object> { ["error"] = $"Area not found with ID {areaId}" };
+
+            if (!area.Mutable)
+                return new Dictionary<string, object> { ["error"] = "Cannot delete non-mutable area" };
+
+            // 使用 Area.Delete() 方法
+            area.Delete();
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["message"] = $"Area deleted"
+            };
+        }
+
+        /// <summary>
+        /// 重命名区域
+        /// </summary>
+        public static Dictionary<string, object> RenameAllowedArea(int areaId, string newName)
+        {
+            var map = Find.CurrentMap;
+            if (map == null)
+                return new Dictionary<string, object> { ["error"] = "No current map available" };
+
+            var area = map.areaManager.AllAreas.FirstOrDefault(a => a.ID == areaId);
+            if (area == null)
+                return new Dictionary<string, object> { ["error"] = $"Area not found with ID {areaId}" };
+
+            // 使用 RenamableLabel 属性
+            area.RenamableLabel = newName;
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["areaId"] = areaId,
+                ["newName"] = newName
+            };
+        }
+
+        /// <summary>
+        /// 向区域添加格子
+        /// </summary>
+        public static Dictionary<string, object> AddCellsToArea(int areaId, string cellsJson)
+        {
+            var map = Find.CurrentMap;
+            if (map == null)
+                return new Dictionary<string, object> { ["error"] = "No current map available" };
+
+            var area = map.areaManager.AllAreas.FirstOrDefault(a => a.ID == areaId) as Area_Allowed;
+            if (area == null)
+                return new Dictionary<string, object> { ["error"] = $"Area not found with ID {areaId} or not an allowed area" };
+
+            var cells = ParseCellsList(cellsJson);
+            if (cells == null)
+                return new Dictionary<string, object> { ["error"] = "Invalid cells format" };
+
+            int addedCount = 0;
+            foreach (var cell in cells)
+            {
+                var intVec3 = new IntVec3(cell["x"], 0, cell["z"]);
+                if (intVec3.InBounds(map) && !area[intVec3])
+                {
+                    area[intVec3] = true;
+                    addedCount++;
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["areaId"] = areaId,
+                ["addedCount"] = addedCount,
+                ["totalCells"] = area.TrueCount
+            };
+        }
+
+        /// <summary>
+        /// 从区域移除格子
+        /// </summary>
+        public static Dictionary<string, object> RemoveCellsFromArea(int areaId, string cellsJson)
+        {
+            var map = Find.CurrentMap;
+            if (map == null)
+                return new Dictionary<string, object> { ["error"] = "No current map available" };
+
+            var area = map.areaManager.AllAreas.FirstOrDefault(a => a.ID == areaId) as Area_Allowed;
+            if (area == null)
+                return new Dictionary<string, object> { ["error"] = $"Area not found with ID {areaId} or not an allowed area" };
+
+            var cells = ParseCellsList(cellsJson);
+            if (cells == null)
+                return new Dictionary<string, object> { ["error"] = "Invalid cells format" };
+
+            int removedCount = 0;
+            foreach (var cell in cells)
+            {
+                var intVec3 = new IntVec3(cell["x"], 0, cell["z"]);
+                if (intVec3.InBounds(map) && area[intVec3])
+                {
+                    area[intVec3] = false;
+                    removedCount++;
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["areaId"] = areaId,
+                ["removedCount"] = removedCount,
+                ["totalCells"] = area.TrueCount
+            };
+        }
+
+        /// <summary>
+        /// 解析格子列表JSON
+        /// </summary>
+        private static List<Dictionary<string, int>> ParseCellsList(string cellsJson)
+        {
+            if (string.IsNullOrEmpty(cellsJson))
+                return null;
+
+            try
+            {
+                // 简单的JSON解析，不使用Newtonsoft.Json
+                cellsJson = cellsJson.Trim();
+                if (!cellsJson.StartsWith("[") || !cellsJson.EndsWith("]"))
+                    return null;
+
+                var cells = new List<Dictionary<string, int>>();
+                cellsJson = cellsJson.Substring(1, cellsJson.Length - 2).Trim();
+
+                if (string.IsNullOrEmpty(cellsJson))
+                    return cells;
+
+                // 分割对象
+                var parts = cellsJson.Split(new[] { "}," }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var part in parts)
+                {
+                    var objStr = part.Trim();
+                    if (objStr.StartsWith("{"))
+                        objStr = objStr.Substring(1);
+                    if (objStr.EndsWith("}"))
+                        objStr = objStr.Substring(0, objStr.Length - 1);
+
+                    int x = 0, z = 0;
+                    var pairs = objStr.Split(new[] { "," }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var pair in pairs)
+                    {
+                        var kv = pair.Split(':');
+                        if (kv.Length == 2)
+                        {
+                            var key = kv[0].Trim().Trim('"');
+                            var value = kv[1].Trim().Trim('"');
+                            if (key == "x")
+                                int.TryParse(value, out x);
+                            else if (key == "z")
+                                int.TryParse(value, out z);
+                        }
+                    }
+
+                    cells.Add(new Dictionary<string, int> { ["x"] = x, ["z"] = z });
+                }
+
+                return cells;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        #endregion
+
         #region Room 房间系统 - 基于 Room API
 
         /// <summary>
@@ -2336,45 +2752,71 @@ namespace RimWorldAI.Core
         }
 
         /// <summary>
-        /// 获取所有工作类型定义
+        /// 获取工作类型定义（合并方法）
         /// </summary>
-        public static List<Dictionary<string, object>> GetAllWorkTypes()
+        /// <param name="filter">筛选模式: "all"(所有类型) 或 "supported"(仅 trigger_work 支持的类型)</param>
+        public static Dictionary<string, object> GetWorkTypes(string filter = "all")
         {
             var result = new List<Dictionary<string, object>>();
+            bool supportedOnly = filter?.ToLower() == "supported";
 
             foreach (var workType in DefDatabase<WorkTypeDef>.AllDefs.OrderBy(w => w.naturalPriority))
             {
-                // 获取相关技能列表
-                var relevantSkills = new List<string>();
-                if (workType.relevantSkills != null)
-                {
-                    foreach (var skill in workType.relevantSkills)
-                    {
-                        relevantSkills.Add(skill.defName);
-                    }
-                }
+                // 如果只要支持的类型，跳过没有 workGiver 的
+                if (supportedOnly && (workType.workGiversByPriority == null || workType.workGiversByPriority.Count == 0))
+                    continue;
 
-                result.Add(new Dictionary<string, object>
+                if (supportedOnly)
                 {
-                    ["defName"] = workType.defName,
-                    ["label"] = workType.label ?? workType.defName,
-                    ["labelShort"] = workType.labelShort ?? workType.label ?? workType.defName,
-                    ["pawnLabel"] = workType.pawnLabel ?? "",
-                    ["gerundLabel"] = workType.gerundLabel ?? "",
-                    ["verb"] = workType.verb ?? "",
-                    ["workTags"] = workType.workTags.ToString(),
-                    ["naturalPriority"] = workType.naturalPriority,
-                    ["visible"] = workType.visible,
-                    ["alwaysStartActive"] = workType.alwaysStartActive,
-                    ["requireCapableColonist"] = workType.requireCapableColonist,
-                    ["disabledForSlaves"] = workType.disabledForSlaves,
-                    ["relevantSkills"] = relevantSkills,
-                    ["workGiverCount"] = workType.workGiversByPriority?.Count ?? 0,
-                    ["description"] = workType.description ?? ""
-                });
+                    // 精简模式：仅返回 trigger_work 需要的字段
+                    result.Add(new Dictionary<string, object>
+                    {
+                        ["defName"] = workType.defName,
+                        ["label"] = workType.labelShort ?? workType.label ?? workType.defName,
+                        ["description"] = workType.description ?? "",
+                        ["workGiverCount"] = workType.workGiversByPriority?.Count ?? 0
+                    });
+                }
+                else
+                {
+                    // 完整模式：返回所有字段
+                    var relevantSkills = new List<string>();
+                    if (workType.relevantSkills != null)
+                    {
+                        foreach (var skill in workType.relevantSkills)
+                        {
+                            relevantSkills.Add(skill.defName);
+                        }
+                    }
+
+                    result.Add(new Dictionary<string, object>
+                    {
+                        ["defName"] = workType.defName,
+                        ["label"] = workType.label ?? workType.defName,
+                        ["labelShort"] = workType.labelShort ?? workType.label ?? workType.defName,
+                        ["pawnLabel"] = workType.pawnLabel ?? "",
+                        ["gerundLabel"] = workType.gerundLabel ?? "",
+                        ["verb"] = workType.verb ?? "",
+                        ["workTags"] = workType.workTags.ToString(),
+                        ["naturalPriority"] = workType.naturalPriority,
+                        ["visible"] = workType.visible,
+                        ["alwaysStartActive"] = workType.alwaysStartActive,
+                        ["requireCapableColonist"] = workType.requireCapableColonist,
+                        ["disabledForSlaves"] = workType.disabledForSlaves,
+                        ["relevantSkills"] = relevantSkills,
+                        ["workGiverCount"] = workType.workGiversByPriority?.Count ?? 0,
+                        ["description"] = workType.description ?? ""
+                    });
+                }
             }
 
-            return result;
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["filter"] = supportedOnly ? "supported" : "all",
+                ["count"] = result.Count,
+                ["workTypes"] = result
+            };
         }
 
         /// <summary>
@@ -2411,6 +2853,108 @@ namespace RimWorldAI.Core
             catch { }
 
             return result;
+        }
+
+        /// <summary>
+        /// 获取是否启用了手动工作优先级模式
+        /// 如果未启用，所有殖民者的工作优先级都使用默认值3，设置优先级无效
+        /// </summary>
+        public static Dictionary<string, object> GetUseWorkPriorities()
+        {
+            try
+            {
+                var playSettings = Find.PlaySettings;
+                if (playSettings == null)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["success"] = false,
+                        ["error"] = "PlaySettings not available"
+                    };
+                }
+
+                return new Dictionary<string, object>
+                {
+                    ["success"] = true,
+                    ["useWorkPriorities"] = playSettings.useWorkPriorities,
+                    ["description"] = playSettings.useWorkPriorities
+                        ? "手动优先级模式已启用，set_work_priority 命令生效"
+                        : "手动优先级模式未启用，所有殖民者使用默认优先级3，set_work_priority 命令无效"
+                };
+            }
+            catch (Exception ex)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["success"] = false,
+                    ["error"] = ex.Message
+                };
+            }
+        }
+
+        /// <summary>
+        /// 设置是否启用手动工作优先级模式
+        /// 必须启用此模式后，set_work_priority 命令才会生效
+        /// </summary>
+        public static Dictionary<string, object> SetUseWorkPriorities(bool enabled)
+        {
+            try
+            {
+                var playSettings = Find.PlaySettings;
+                if (playSettings == null)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["success"] = false,
+                        ["error"] = "PlaySettings not available"
+                    };
+                }
+
+                bool oldValue = playSettings.useWorkPriorities;
+                playSettings.useWorkPriorities = enabled;
+
+                // 通知所有殖民者工作设置已改变
+                // 这会触发 Pawn_WorkSettings.Notify_UseWorkPrioritiesChanged()
+                if (oldValue != enabled)
+                {
+                    foreach (var map in Find.Maps)
+                    {
+                        if (map?.mapPawns?.AllPawns != null)
+                        {
+                            foreach (var pawn in map.mapPawns.AllPawns)
+                            {
+                                if (pawn?.workSettings != null)
+                                {
+                                    try
+                                    {
+                                        pawn.workSettings.Notify_UseWorkPrioritiesChanged();
+                                    }
+                                    catch { }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return new Dictionary<string, object>
+                {
+                    ["success"] = true,
+                    ["useWorkPriorities"] = enabled,
+                    ["previousValue"] = oldValue,
+                    ["changed"] = oldValue != enabled,
+                    ["message"] = enabled
+                        ? "手动优先级模式已启用，现在可以使用 set_work_priority 设置工作优先级"
+                        : "手动优先级模式已禁用，所有殖民者将使用默认优先级"
+                };
+            }
+            catch (Exception ex)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["success"] = false,
+                    ["error"] = ex.Message
+                };
+            }
         }
 
         #endregion
@@ -4046,6 +4590,130 @@ namespace RimWorldAI.Core
         }
 
         /// <summary>
+        /// 获取露天/暴露物资检测（生存关键：检测会恶化的物资）
+        /// </summary>
+        public static Dictionary<string, object> GetExposedItems(Map map = null)
+        {
+            map = map ?? Find.CurrentMap;
+            if (map == null)
+            {
+                return new Dictionary<string, object> { ["error"] = "No map available" };
+            }
+
+            var haulables = map.listerThings?.ThingsInGroup(ThingRequestGroup.HaulableEver);
+            if (haulables == null || haulables.Count == 0)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["totalCount"] = 0,
+                    ["exposedCount"] = 0,
+                    ["items"] = new List<object>()
+                };
+            }
+
+            var exposedItems = new List<Dictionary<string, object>>();
+            int totalCount = 0;
+            int exposedCount = 0;
+            int deterioratingCount = 0;
+
+            foreach (var thing in haulables)
+            {
+                if (thing == null || thing.def == null) continue;
+                if (thing.def.category != ThingCategory.Item) continue;
+
+                totalCount++;
+                var pos = thing.Position;
+
+                // 检查是否露天（无屋顶）
+                bool isRoofed = map.roofGrid?.Roofed(pos) ?? false;
+                bool isOutdoors = !isRoofed;
+
+                // 检查房间状态
+                var room = pos.GetRoom(map);
+                bool isPsychologicallyOutdoors = room == null || room.PsychologicallyOutdoors || room.TouchesMapEdge;
+
+                // 只关注露天/暴露的物资
+                if (!isOutdoors && !isPsychologicallyOutdoors) continue;
+
+                exposedCount++;
+
+                // 检查是否会恶化
+                bool canDeteriorate = thing.def.deteriorateFromEnvironmentalEffects;
+                float deteriorationRate = 0f;
+
+                if (canDeteriorate)
+                {
+                    // 使用SteadyEnvironmentEffects计算恶化率
+                    var reasons = new List<string>();
+                    deteriorationRate = SteadyEnvironmentEffects.FinalDeteriorationRate(thing, reasons);
+                    if (deteriorationRate > 0) deterioratingCount++;
+                }
+
+                // 检查是否可腐烂（食物等）
+                var rottableComp = thing.TryGetComp<CompRottable>();
+                bool canRot = rottableComp != null;
+                int ticksUntilRot = -1;
+                float rotProgress = 0f;
+
+                if (canRot)
+                {
+                    ticksUntilRot = rottableComp.TicksUntilRotAtCurrentTemp;
+                    rotProgress = rottableComp.RotProgress;
+                }
+
+                // 检查温度
+                float temperature = GenTemperature.GetTemperatureForCell(pos, map);
+
+                // 判断是否危险
+                var warnings = new List<string>();
+                if (deteriorationRate > 0)
+                    warnings.Add($"恶化率{deteriorationRate:F1}/天");
+                if (canRot && ticksUntilRot < 60000) // 不到1天就腐烂
+                    warnings.Add($"即将腐烂({ticksUntilRot / 2500}小时)");
+                else if (canRot && ticksUntilRot < 250000) // 不到10天
+                    warnings.Add($"会腐烂({ticksUntilRot / 60000}天)");
+
+                exposedItems.Add(new Dictionary<string, object>
+                {
+                    ["defName"] = thing.def.defName,
+                    ["label"] = thing.def.label ?? thing.def.defName,
+                    ["stackCount"] = thing.stackCount,
+                    ["position"] = new { x = pos.x, z = pos.z },
+                    ["isRoofed"] = isRoofed,
+                    ["isOutdoors"] = isPsychologicallyOutdoors,
+                    ["temperature"] = temperature,
+                    ["canDeteriorate"] = canDeteriorate,
+                    ["deteriorationRate"] = deteriorationRate,
+                    ["canRot"] = canRot,
+                    ["ticksUntilRot"] = ticksUntilRot,
+                    ["warnings"] = warnings,
+                    ["isDangerous"] = warnings.Count > 0
+                });
+            }
+
+            // 按危险程度排序
+            exposedItems = exposedItems.OrderByDescending(i => (bool)i["isDangerous"])
+                                       .ThenByDescending(i => (float)i["deteriorationRate"])
+                                       .ThenByDescending(i => (int)i["stackCount"])
+                                       .ToList();
+
+            return new Dictionary<string, object>
+            {
+                ["totalCount"] = totalCount,
+                ["exposedCount"] = exposedCount,
+                ["deterioratingCount"] = deterioratingCount,
+                ["items"] = exposedItems,
+                ["summary"] = new
+                {
+                    totalItems = totalCount,
+                    exposedItems = exposedCount,
+                    deterioratingItems = deterioratingCount,
+                    needsAttention = deterioratingCount > 0
+                }
+            };
+        }
+
+        /// <summary>
         /// 按defName获取特定物品统计
         /// </summary>
         public static Dictionary<string, object> GetItemByDefName(string defName, Map map = null)
@@ -4081,99 +4749,361 @@ namespace RimWorldAI.Core
 
         /// <summary>
         /// 获取所有生产建筑（工作台等，按defName细分）
+        /// 兼容旧API，内部调用 GetBuildingsByCategory
         /// </summary>
         public static Dictionary<string, object> GetProductionBuildingsDetailed(Map map = null)
         {
-            map = map ?? Find.CurrentMap;
-            var buildings = map?.listerThings?.ThingsInGroup(ThingRequestGroup.BuildingArtificial);
+            return GetBuildingsByCategory("production", map);
+        }
 
-            // 筛选有配方的建筑（工作台）
-            var productionBuildings = buildings?.Where(b =>
-                b is Building building &&
-                building.def?.inspectorTabs != null &&
-                building.def.inspectorTabs.Any(t => t == typeof(ITab_Bills))
-            ).ToList() ?? new List<Thing>();
+        /// <summary>
+        /// 获取工作台可用配方列表
+        /// 基于 RecipeDef, Building_WorkTable API
+        /// </summary>
+        public static Dictionary<string, object> GetWorkbenchRecipes(Building building)
+        {
+            if (building == null)
+                return new Dictionary<string, object> { ["error"] = "Building is null" };
 
-            return GroupBuildingsByDefName(productionBuildings, "production");
+            // 检查是否是工作台
+            if (building.def?.AllRecipes == null)
+                return new Dictionary<string, object> { ["error"] = "Building has no recipes" };
+
+            var recipes = new List<Dictionary<string, object>>();
+
+            foreach (var recipe in building.def.AllRecipes)
+            {
+                if (recipe == null) continue;
+
+                var recipeInfo = new Dictionary<string, object>
+                {
+                    ["defName"] = recipe.defName,
+                    ["label"] = recipe.label ?? recipe.defName,
+                    ["description"] = recipe.description ?? "",
+                    ["jobString"] = recipe.jobString ?? "",
+                    ["workAmount"] = recipe.workAmount,
+                    ["workSkill"] = recipe.workSkill?.defName ?? "None",
+                    ["workSkillLabel"] = recipe.workSkill?.label ?? "None",
+                    ["availableNow"] = recipe.AvailableNow
+                };
+
+                // 产品列表
+                var products = new List<Dictionary<string, object>>();
+                if (recipe.products != null)
+                {
+                    foreach (var product in recipe.products)
+                    {
+                        products.Add(new Dictionary<string, object>
+                        {
+                            ["thingDef"] = product.thingDef?.defName ?? "Unknown",
+                            ["label"] = product.thingDef?.label ?? "Unknown",
+                            ["count"] = product.count
+                        });
+                    }
+                }
+                recipeInfo["products"] = products;
+
+                // 原料需求
+                var ingredients = new List<Dictionary<string, object>>();
+                if (recipe.ingredients != null)
+                {
+                    foreach (var ingredient in recipe.ingredients)
+                    {
+                        var ingredientInfo = new Dictionary<string, object>
+                        {
+                            ["count"] = ingredient.GetBaseCount(),
+                            ["isFixed"] = ingredient.IsFixedIngredient
+                        };
+
+                        // 允许的物品类型
+                        var allowedDefs = new List<string>();
+                        if (ingredient.filter?.AllowedThingDefs != null)
+                        {
+                            foreach (var def in ingredient.filter.AllowedThingDefs)
+                            {
+                                allowedDefs.Add(def.defName);
+                            }
+                        }
+                        ingredientInfo["allowedDefs"] = allowedDefs;
+
+                        ingredients.Add(ingredientInfo);
+                    }
+                }
+                recipeInfo["ingredients"] = ingredients;
+
+                // 技能需求
+                var skillReqs = new List<Dictionary<string, object>>();
+                if (recipe.skillRequirements != null)
+                {
+                    foreach (var skillReq in recipe.skillRequirements)
+                    {
+                        if (skillReq?.skill != null)
+                        {
+                            skillReqs.Add(new Dictionary<string, object>
+                            {
+                                ["skill"] = skillReq.skill.defName,
+                                ["skillLabel"] = skillReq.skill.label ?? skillReq.skill.defName,
+                                ["minLevel"] = skillReq.minLevel
+                            });
+                        }
+                    }
+                }
+                recipeInfo["skillRequirements"] = skillReqs;
+
+                // 研究前置
+                var researchPrereqs = new List<string>();
+                if (recipe.researchPrerequisite != null)
+                {
+                    researchPrereqs.Add(recipe.researchPrerequisite.defName);
+                }
+                if (recipe.researchPrerequisites != null)
+                {
+                    foreach (var research in recipe.researchPrerequisites)
+                    {
+                        researchPrereqs.Add(research.defName);
+                    }
+                }
+                recipeInfo["researchPrerequisites"] = researchPrereqs;
+
+                recipes.Add(recipeInfo);
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["buildingId"] = building.thingIDNumber,
+                ["defName"] = building.def?.defName ?? "Unknown",
+                ["label"] = building.def?.label ?? "Unknown",
+                ["recipeCount"] = recipes.Count,
+                ["recipes"] = recipes
+            };
+        }
+
+        /// <summary>
+        /// 获取工作台当前生产账单
+        /// 基于 BillStack, Bill_Production API
+        /// </summary>
+        public static Dictionary<string, object> GetWorkbenchBills(Building building)
+        {
+            if (building == null)
+                return new Dictionary<string, object> { ["error"] = "Building is null" };
+
+            // 检查是否是IBillGiver
+            var billGiver = building as IBillGiver;
+            if (billGiver == null)
+                return new Dictionary<string, object> { ["error"] = "Building does not support bills" };
+
+            var billStack = billGiver.BillStack;
+            if (billStack == null)
+                return new Dictionary<string, object> { ["error"] = "BillStack is null" };
+
+            var bills = new List<Dictionary<string, object>>();
+
+            foreach (var bill in billStack.Bills)
+            {
+                if (bill == null) continue;
+
+                var billInfo = new Dictionary<string, object>
+                {
+                    ["id"] = bill.GetHashCode(),
+                    ["label"] = bill.LabelCap ?? bill.Label ?? "Unknown",
+                    ["recipeDefName"] = bill.recipe?.defName ?? "Unknown",
+                    ["recipeLabel"] = bill.recipe?.label ?? "Unknown",
+                    ["suspended"] = bill.suspended
+                };
+
+                // Bill_Production 特有属性
+                if (bill is Bill_Production productionBill)
+                {
+                    billInfo["repeatMode"] = productionBill.repeatMode?.defName ?? "Unknown";
+                    billInfo["repeatCount"] = productionBill.repeatCount;
+                    billInfo["targetCount"] = productionBill.targetCount;
+                    billInfo["paused"] = productionBill.paused;
+                    billInfo["storeMode"] = productionBill.GetStoreMode()?.defName ?? "Unknown";
+                    billInfo["pauseWhenSatisfied"] = productionBill.pauseWhenSatisfied;
+                    billInfo["unpauseWhenYouHave"] = productionBill.unpauseWhenYouHave;
+
+                    // 进度信息
+                    if (productionBill.repeatMode == BillRepeatModeDefOf.TargetCount)
+                    {
+                        try
+                        {
+                            int currentCount = productionBill.recipe?.WorkerCounter?.CountProducts(productionBill) ?? 0;
+                            billInfo["currentCount"] = currentCount;
+                            billInfo["progressPercent"] = productionBill.targetCount > 0
+                                ? (float)currentCount / productionBill.targetCount * 100
+                                : 0;
+                        }
+                        catch
+                        {
+                            billInfo["currentCount"] = 0;
+                            billInfo["progressPercent"] = 0;
+                        }
+                    }
+                }
+
+                // 工作状态
+                billInfo["shouldDoNow"] = bill.ShouldDoNow();
+
+                bills.Add(billInfo);
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["buildingId"] = building.thingIDNumber,
+                ["defName"] = building.def?.defName ?? "Unknown",
+                ["label"] = building.def?.label ?? "Unknown",
+                ["billCount"] = billStack.Count,
+                ["bills"] = bills,
+                ["currentlyUsable"] = billGiver.CurrentlyUsableForBills()
+            };
         }
 
         /// <summary>
         /// 获取所有电力建筑（发电机、电池等，按defName细分）
+        /// 兼容旧API，内部调用 GetBuildingsByCategory
         /// </summary>
         public static Dictionary<string, object> GetPowerBuildingsDetailed(Map map = null)
         {
-            map = map ?? Find.CurrentMap;
-            var buildings = map?.listerThings?.ThingsInGroup(ThingRequestGroup.BuildingArtificial);
-
-            // 筛选有电力组件的建筑
-            var powerBuildings = buildings?.Where(b =>
-                b is Building building &&
-                (building.PowerComp != null || building.def?.HasComp(typeof(CompPower)) == true)
-            ).ToList() ?? new List<Thing>();
-
-            return GroupBuildingsByDefName(powerBuildings, "power");
+            return GetBuildingsByCategory("power", map);
         }
 
         /// <summary>
         /// 获取所有防御建筑（炮塔、陷阱等，按defName细分）
+        /// 兼容旧API，内部调用 GetBuildingsByCategory
         /// </summary>
         public static Dictionary<string, object> GetDefenseBuildingsDetailed(Map map = null)
         {
-            map = map ?? Find.CurrentMap;
-            var buildings = map?.listerThings?.ThingsInGroup(ThingRequestGroup.BuildingArtificial);
-
-            // 筛选防御建筑（炮塔、沙袋、陷阱等）
-            var defenseBuildings = buildings?.Where(b =>
-                b is Building building &&
-                (building.def?.building?.IsTurret == true ||
-                 building.def?.building?.isTrap == true ||
-                 building.def?.defName?.Contains("Barricade") == true ||
-                 building.def?.defName?.Contains("Sandbags") == true ||
-                 building.def?.defName?.Contains("Turret") == true)
-            ).ToList() ?? new List<Thing>();
-
-            return GroupBuildingsByDefName(defenseBuildings, "defense");
+            return GetBuildingsByCategory("defense", map);
         }
 
         /// <summary>
         /// 获取所有储存建筑（货架、储存区等，按defName细分）
+        /// 兼容旧API，内部调用 GetBuildingsByCategory
         /// </summary>
         public static Dictionary<string, object> GetStorageBuildingsDetailed(Map map = null)
         {
-            map = map ?? Find.CurrentMap;
-            var buildings = map?.listerThings?.ThingsInGroup(ThingRequestGroup.BuildingArtificial);
-
-            // 筛选储存建筑
-            var storageBuildings = buildings?.Where(b =>
-                b is Building building &&
-                (building is Building_Storage ||
-                 building.def?.building?.fixedStorageSettings != null ||
-                 building.def?.defName?.Contains("Shelf") == true)
-            ).ToList() ?? new List<Thing>();
-
-            return GroupBuildingsByDefName(storageBuildings, "storage");
+            return GetBuildingsByCategory("storage", map);
         }
 
         /// <summary>
         /// 获取所有家具（床、椅子、桌子等，按defName细分）
+        /// 兼容旧API，内部调用 GetBuildingsByCategory
         /// </summary>
         public static Dictionary<string, object> GetFurnitureDetailed(Map map = null)
         {
+            return GetBuildingsByCategory("furniture", map);
+        }
+
+        /// <summary>
+        /// 合并的建筑分类查询方法
+        /// </summary>
+        /// <param name="category">类别: production, power, defense, storage, furniture, all</param>
+        /// <param name="map">地图实例</param>
+        public static Dictionary<string, object> GetBuildingsByCategory(string category = "all", Map map = null)
+        {
             map = map ?? Find.CurrentMap;
             var buildings = map?.listerThings?.ThingsInGroup(ThingRequestGroup.BuildingArtificial);
+            var allResults = new Dictionary<string, object>();
+            int totalCount = 0;
 
-            // 筛选家具（床、椅子、桌子等）
-            var furniture = buildings?.Where(b =>
-                b is Building building &&
-                (building.def?.building?.isSittable == true ||
-                 building is Building_Bed ||
-                 building.def?.defName?.Contains("Table") == true ||
-                 building.def?.defName?.Contains("Chair") == true ||
-                 building.def?.defName?.Contains("Stool") == true ||
-                 building.def?.defName?.Contains("Bed") == true)
-            ).ToList() ?? new List<Thing>();
+            category = category?.ToLower() ?? "all";
 
-            return GroupBuildingsByDefName(furniture, "furniture");
+            // 生产建筑
+            if (category == "all" || category == "production")
+            {
+                var productionBuildings = buildings?.Where(b =>
+                    b is Building building &&
+                    building.def?.inspectorTabs != null &&
+                    building.def.inspectorTabs.Any(t => t == typeof(ITab_Bills))
+                ).ToList() ?? new List<Thing>();
+
+                var result = GroupBuildingsByDefName(productionBuildings, "production");
+                allResults["production"] = result;
+                totalCount += (int)result["totalCount"];
+            }
+
+            // 电力建筑
+            if (category == "all" || category == "power")
+            {
+                var powerBuildings = buildings?.Where(b =>
+                    b is Building building &&
+                    (building.PowerComp != null || building.def?.HasComp(typeof(CompPower)) == true)
+                ).ToList() ?? new List<Thing>();
+
+                var result = GroupBuildingsByDefName(powerBuildings, "power");
+                allResults["power"] = result;
+                totalCount += (int)result["totalCount"];
+            }
+
+            // 防御建筑
+            if (category == "all" || category == "defense")
+            {
+                var defenseBuildings = buildings?.Where(b =>
+                    b is Building building &&
+                    (building.def?.building?.IsTurret == true ||
+                     building.def?.building?.isTrap == true ||
+                     building.def?.defName?.Contains("Barricade") == true ||
+                     building.def?.defName?.Contains("Sandbags") == true ||
+                     building.def?.defName?.Contains("Turret") == true)
+                ).ToList() ?? new List<Thing>();
+
+                var result = GroupBuildingsByDefName(defenseBuildings, "defense");
+                allResults["defense"] = result;
+                totalCount += (int)result["totalCount"];
+            }
+
+            // 储存建筑
+            if (category == "all" || category == "storage")
+            {
+                var storageBuildings = buildings?.Where(b =>
+                    b is Building building &&
+                    (building is Building_Storage ||
+                     building.def?.building?.fixedStorageSettings != null ||
+                     building.def?.defName?.Contains("Shelf") == true)
+                ).ToList() ?? new List<Thing>();
+
+                var result = GroupBuildingsByDefName(storageBuildings, "storage");
+                allResults["storage"] = result;
+                totalCount += (int)result["totalCount"];
+            }
+
+            // 家具
+            if (category == "all" || category == "furniture")
+            {
+                var furniture = buildings?.Where(b =>
+                    b is Building building &&
+                    (building.def?.building?.isSittable == true ||
+                     building is Building_Bed ||
+                     building.def?.defName?.Contains("Table") == true ||
+                     building.def?.defName?.Contains("Chair") == true ||
+                     building.def?.defName?.Contains("Stool") == true ||
+                     building.def?.defName?.Contains("Bed") == true)
+                ).ToList() ?? new List<Thing>();
+
+                var result = GroupBuildingsByDefName(furniture, "furniture");
+                allResults["furniture"] = result;
+                totalCount += (int)result["totalCount"];
+            }
+
+            // 如果指定了单个类别，直接返回该类别的结果
+            if (category != "all" && allResults.ContainsKey(category))
+            {
+                return new Dictionary<string, object>
+                {
+                    ["success"] = true,
+                    ["category"] = category,
+                    ["totalCount"] = ((Dictionary<string, object>)allResults[category])["totalCount"],
+                    ["types"] = ((Dictionary<string, object>)allResults[category])["types"]
+                };
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["category"] = "all",
+                ["totalCount"] = totalCount,
+                ["categories"] = allResults
+            };
         }
 
         /// <summary>
@@ -4243,6 +5173,202 @@ namespace RimWorldAI.Core
             {
                 ["totalCount"] = buildings.Count,
                 ["types"] = types.Values.ToList()  // 转换为列表以正确序列化
+            };
+        }
+
+        /// <summary>
+        /// 获取研究系统状态
+        /// </summary>
+        public static Dictionary<string, object> GetResearchStatus(Map map = null)
+        {
+            map = map ?? Find.CurrentMap;
+
+            // 检查是否有研究台
+            var researchBenches = map?.listerThings?.ThingsInGroup(ThingRequestGroup.BuildingArtificial)?
+                .Where(b => b.def?.defName == "TableResearch" || b.def?.defName?.Contains("Research") == true)
+                .ToList() ?? new List<Thing>();
+
+            bool hasResearchBench = researchBenches.Count > 0;
+
+            // 获取所有研究项目
+            var allProjects = DefDatabase<ResearchProjectDef>.AllDefs.ToList();
+
+            // 分类项目
+            var completedProjects = new List<Dictionary<string, object>>();
+            var availableProjects = new List<Dictionary<string, object>>();
+            var inProgressProjects = new List<Dictionary<string, object>>();
+            var lockedProjects = new List<Dictionary<string, object>>();
+
+            ResearchProjectDef currentProject = null;
+
+            foreach (var project in allProjects)
+            {
+                var projectInfo = new Dictionary<string, object>
+                {
+                    ["defName"] = project.defName,
+                    ["label"] = project.label ?? project.defName,
+                    ["description"] = project.description?.Substring(0, Math.Min(200, project.description?.Length ?? 0)) ?? "",
+                    ["baseCost"] = project.baseCost,
+                    ["tab"] = project.tab?.defName ?? "Unknown"
+                };
+
+                if (project.IsFinished)
+                {
+                    projectInfo["progress"] = 1.0f;
+                    completedProjects.Add(projectInfo);
+                }
+                else if (project.ProgressPercent > 0)
+                {
+                    projectInfo["progress"] = project.ProgressPercent;
+                    inProgressProjects.Add(projectInfo);
+                    // 假设进度最大的是当前项目
+                    if (currentProject == null || project.ProgressPercent > currentProject.ProgressPercent)
+                    {
+                        currentProject = project;
+                    }
+                }
+                else if (project.PrerequisitesCompleted)
+                {
+                    availableProjects.Add(projectInfo);
+                }
+                else
+                {
+                    lockedProjects.Add(projectInfo);
+                }
+            }
+
+            // 构建结果
+            var result = new Dictionary<string, object>
+            {
+                ["hasResearchBench"] = hasResearchBench,
+                ["researchBenchCount"] = researchBenches.Count,
+                ["totalProjects"] = allProjects.Count,
+                ["completedCount"] = completedProjects.Count,
+                ["inProgressCount"] = inProgressProjects.Count,
+                ["availableCount"] = availableProjects.Count,
+                ["lockedCount"] = lockedProjects.Count
+            };
+
+            // 当前项目信息
+            if (currentProject != null)
+            {
+                result["currentProject"] = new Dictionary<string, object>
+                {
+                    ["defName"] = currentProject.defName,
+                    ["label"] = currentProject.label ?? currentProject.defName,
+                    ["progress"] = currentProject.ProgressPercent,
+                    ["baseCost"] = currentProject.baseCost,
+                    ["researched"] = currentProject.baseCost * currentProject.ProgressPercent
+                };
+            }
+            else
+            {
+                result["currentProject"] = null;
+            }
+
+            // 项目列表（限制数量避免返回过多数据）
+            result["completedProjects"] = completedProjects.Take(20).ToList();
+            result["inProgressProjects"] = inProgressProjects;
+            result["availableProjects"] = availableProjects.Take(20).ToList();
+            // 不返回 lockedProjects，太多了
+
+            return result;
+        }
+
+        /// <summary>
+        /// 设置当前研究项目
+        /// </summary>
+        /// <param name="projectDefName">研究项目的 defName，如 "Electricity", "Batteries" 等</param>
+        /// <returns>设置结果</returns>
+        public static Dictionary<string, object> SetResearchProject(string projectDefName)
+        {
+            if (string.IsNullOrEmpty(projectDefName))
+            {
+                return new Dictionary<string, object>
+                {
+                    ["success"] = false,
+                    ["error"] = "研究项目名称不能为空"
+                };
+            }
+
+            // 查找研究项目
+            var project = DefDatabase<ResearchProjectDef>.GetNamedSilentFail(projectDefName);
+            if (project == null)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["success"] = false,
+                    ["error"] = $"未找到研究项目: {projectDefName}"
+                };
+            }
+
+            // 检查是否已完成
+            if (project.IsFinished)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["success"] = false,
+                    ["error"] = $"研究项目 {project.label ?? projectDefName} 已完成",
+                    ["project"] = new Dictionary<string, object>
+                    {
+                        ["defName"] = project.defName,
+                        ["label"] = project.label,
+                        ["isFinished"] = true
+                    }
+                };
+            }
+
+            // 检查前置条件是否满足
+            if (!project.PrerequisitesCompleted)
+            {
+                var missingPrereqs = new List<string>();
+                if (project.prerequisites != null)
+                {
+                    foreach (var prereq in project.prerequisites)
+                    {
+                        if (prereq != null && !prereq.IsFinished)
+                        {
+                            missingPrereqs.Add(prereq.label ?? prereq.defName);
+                        }
+                    }
+                }
+
+                return new Dictionary<string, object>
+                {
+                    ["success"] = false,
+                    ["error"] = $"研究项目 {project.label ?? projectDefName} 的前置条件未完成",
+                    ["missingPrerequisites"] = missingPrereqs
+                };
+            }
+
+            // 获取当前研究项目 (通过反射)
+            ResearchProjectDef currentProject = null;
+            var currentProjField = typeof(ResearchManager).GetField("currentProj",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (currentProjField != null)
+            {
+                currentProject = currentProjField.GetValue(Find.ResearchManager) as ResearchProjectDef;
+            }
+            string previousProjectName = currentProject?.label ?? currentProject?.defName ?? "无";
+
+            // 设置新的研究项目
+            if (currentProjField != null)
+            {
+                currentProjField.SetValue(Find.ResearchManager, project);
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["message"] = $"已设置研究项目: {project.label ?? projectDefName}",
+                ["previousProject"] = previousProjectName,
+                ["currentProject"] = new Dictionary<string, object>
+                {
+                    ["defName"] = project.defName,
+                    ["label"] = project.label,
+                    ["baseCost"] = project.baseCost,
+                    ["progress"] = project.ProgressPercent
+                }
             };
         }
 
@@ -4739,38 +5865,6 @@ namespace RimWorldAI.Core
             if (workType == "Cook") return "烹饪";
             if (workType == "Hunt") return "狩猎";
             return workType;
-        }
-
-        /// <summary>
-        /// 获取所有支持的工作类型列表
-        /// </summary>
-        public static Dictionary<string, object> GetSupportedWorkTypes()
-        {
-            List<Dictionary<string, object>> workTypes = new List<Dictionary<string, object>>();
-
-            foreach (WorkTypeDef def in DefDatabase<WorkTypeDef>.AllDefs)
-            {
-                if (def == null || def.workGiversByPriority == null || def.workGiversByPriority.Count == 0)
-                    continue;
-
-                workTypes.Add(new Dictionary<string, object>
-                {
-                    ["defName"] = def.defName,
-                    ["label"] = def.labelShort ?? def.label ?? def.defName,
-                    ["description"] = def.description ?? "",
-                    ["workGiverCount"] = def.workGiversByPriority.Count
-                });
-            }
-
-            return new Dictionary<string, object>
-            {
-                ["success"] = true,
-                ["data"] = new Dictionary<string, object>
-                {
-                    ["count"] = workTypes.Count,
-                    ["workTypes"] = workTypes
-                }
-            };
         }
 
         #endregion
@@ -5381,207 +6475,6 @@ namespace RimWorldAI.Core
 
         #endregion
 
-        #region 植物标记命令 (Designation)
-
-        /// <summary>
-        /// 标记树木/植物砍伐 - 让殖民者自动砍伐指定的植物
-        /// 对应游戏中的 Orders -> Cut Plants 操作
-        /// 使用 GenRadial.RadialPattern 高效遍历圆形区域
-        /// </summary>
-        /// <param name="centerX">中心X坐标（可选，默认为殖民地中心）</param>
-        /// <param name="centerZ">中心Z坐标（可选，默认为殖民地中心）</param>
-        /// <param name="radius">半径（可选，默认30格）</param>
-        /// <param name="maxCount">最大标记数量（可选，默认20棵）</param>
-        /// <param name="treesOnly">是否只标记树木（默认true）</param>
-        /// <param name="map">目标地图</param>
-        /// <returns>标记结果</returns>
-        public static Dictionary<string, object> DesignateCutPlants(
-            int? centerX = null, int? centerZ = null,
-            int radius = 30, int maxCount = 20, bool treesOnly = true,
-            Map map = null)
-        {
-            map = map ?? Find.CurrentMap;
-            if (map == null)
-            {
-                return new Dictionary<string, object>
-                {
-                    ["success"] = false,
-                    ["error"] = "No map available"
-                };
-            }
-
-            try
-            {
-                // 确定中心点
-                IntVec3 center;
-                if (centerX.HasValue && centerZ.HasValue)
-                {
-                    center = new IntVec3(centerX.Value, 0, centerZ.Value);
-                }
-                else
-                {
-                    // 默认使用殖民地的中心位置
-                    center = map.Center;
-                }
-
-                // 计算需要遍历的格子数量
-                int numCells = GenRadial.NumCellsInRadius(radius);
-                int designatedCount = 0;
-                int totalWoodYield = 0;
-                var designatedList = new List<Dictionary<string, object>>();
-
-                // 使用 GenRadial.RadialPattern 高效遍历圆形区域
-                for (int i = 0; i < numCells && designatedCount < maxCount; i++)
-                {
-                    IntVec3 cell = center + GenRadial.RadialPattern[i];
-
-                    // 检查是否在地图边界内
-                    if (!cell.InBounds(map))
-                        continue;
-
-                    // 获取该格子的植物
-                    Plant plant = cell.GetPlant(map);
-                    if (plant == null)
-                        continue;
-
-                    // 检查是否已有砍伐标记
-                    if (map.designationManager.DesignationOn(plant, DesignationDefOf.CutPlant) != null)
-                        continue;
-
-                    // 检查是否为树木
-                    if (treesOnly && !plant.def.plant.IsTree)
-                        continue;
-
-                    try
-                    {
-                        // 添加砍伐标记
-                        var designation = new Designation(plant, DesignationDefOf.CutPlant);
-                        map.designationManager.AddDesignation(designation);
-
-                        designatedCount++;
-                        int woodYield = (int)(plant.def.plant.harvestYield * plant.Growth);
-                        totalWoodYield += woodYield;
-
-                        designatedList.Add(new Dictionary<string, object>
-                        {
-                            ["thingId"] = plant.thingIDNumber,
-                            ["defName"] = plant.def?.defName,
-                            ["label"] = plant.def?.label,
-                            ["x"] = plant.Position.x,
-                            ["z"] = plant.Position.z,
-                            ["growth"] = plant.Growth,
-                            ["woodYield"] = woodYield
-                        });
-                    }
-                    catch (System.Exception ex)
-                    {
-                        // 忽略单个标记失败
-                        Verse.Log.Warning($"Failed to designate plant at {cell}: {ex.Message}");
-                    }
-                }
-
-                if (designatedCount == 0)
-                {
-                    return new Dictionary<string, object>
-                    {
-                        ["success"] = false,
-                        ["error"] = treesOnly
-                            ? $"在半径 {radius} 格内未找到可标记的树木（中心: {center.x}, {center.z}）"
-                            : $"在半径 {radius} 格内未找到可标记的植物（中心: {center.x}, {center.z}）",
-                        ["searchRadius"] = radius,
-                        ["centerX"] = center.x,
-                        ["centerZ"] = center.z,
-                        ["designatedCount"] = 0
-                    };
-                }
-
-                return new Dictionary<string, object>
-                {
-                    ["success"] = true,
-                    ["designatedCount"] = designatedCount,
-                    ["estimatedWoodYield"] = totalWoodYield,
-                    ["searchRadius"] = radius,
-                    ["centerX"] = center.x,
-                    ["centerZ"] = center.z,
-                    ["treesOnly"] = treesOnly,
-                    ["message"] = $"成功标记 {designatedCount} 棵{(treesOnly ? "树" : "植物")}砍伐，预计产出约 {totalWoodYield} 木材",
-                    ["plants"] = designatedList
-                };
-            }
-            catch (System.Exception ex)
-            {
-                return new Dictionary<string, object>
-                {
-                    ["success"] = false,
-                    ["error"] = $"标记砍伐失败: {ex.Message}"
-                };
-            }
-        }
-
-        /// <summary>
-        /// 取消植物的砍伐标记
-        /// </summary>
-        public static Dictionary<string, object> UndesignateCutPlants(
-            int? centerX = null, int? centerZ = null,
-            int radius = 30, Map map = null)
-        {
-            map = map ?? Find.CurrentMap;
-            if (map == null)
-            {
-                return new Dictionary<string, object>
-                {
-                    ["success"] = false,
-                    ["error"] = "No map available"
-                };
-            }
-
-            try
-            {
-                IntVec3 center = (centerX.HasValue && centerZ.HasValue)
-                    ? new IntVec3(centerX.Value, 0, centerZ.Value)
-                    : map.Center;
-
-                int numCells = GenRadial.NumCellsInRadius(radius);
-                int removedCount = 0;
-
-                for (int i = 0; i < numCells; i++)
-                {
-                    IntVec3 cell = center + GenRadial.RadialPattern[i];
-                    if (!cell.InBounds(map))
-                        continue;
-
-                    Plant plant = cell.GetPlant(map);
-                    if (plant == null)
-                        continue;
-
-                    var designation = map.designationManager.DesignationOn(plant, DesignationDefOf.CutPlant);
-                    if (designation != null)
-                    {
-                        map.designationManager.RemoveDesignation(designation);
-                        removedCount++;
-                    }
-                }
-
-                return new Dictionary<string, object>
-                {
-                    ["success"] = true,
-                    ["removedCount"] = removedCount,
-                    ["searchRadius"] = radius,
-                    ["message"] = $"取消了 {removedCount} 个砍伐标记"
-                };
-            }
-            catch (System.Exception ex)
-            {
-                return new Dictionary<string, object>
-                {
-                    ["success"] = false,
-                    ["error"] = $"取消标记失败: {ex.Message}"
-                };
-            }
-        }
-
-        #endregion
-
         #region ESDF 和 Voronoi 地图分析
 
         // ESDF 缓存
@@ -5779,10 +6672,19 @@ namespace RimWorldAI.Core
         }
 
         /// <summary>
-        /// 获取房间边界建造状态
+        /// 获取房间边界建造状态，并可选择性建造房间
         /// 学习 RimWorld 的 BaseGen.SymbolResolver_EdgeWalls 做法：使用 CellRect.EdgeCells 遍历边缘格子
         /// </summary>
-        public static Dictionary<string, object> GetRoomBoundary(int centerX, int centerZ, int width, int height, Map map = null)
+        /// <param name="centerX">中心X坐标</param>
+        /// <param name="centerZ">中心Z坐标</param>
+        /// <param name="width">房间宽度</param>
+        /// <param name="height">房间高度</param>
+        /// <param name="map">地图</param>
+        /// <param name="build">是否建造房间（放置蓝图）</param>
+        /// <param name="wallDefName">墙壁类型，默认Wall</param>
+        /// <param name="stuffDefName">材料类型，默认WoodLog</param>
+        public static Dictionary<string, object> GetRoomBoundary(int centerX, int centerZ, int width, int height, Map map = null,
+            bool build = false, string wallDefName = "Wall", string stuffDefName = "WoodLog")
         {
             map = map ?? Find.CurrentMap;
             if (map == null)
@@ -5834,8 +6736,81 @@ namespace RimWorldAI.Core
                 }
             }
 
-            // 3. 返回结果
-            return new Dictionary<string, object>
+            // 3. 如果需要建造，在missingCells上放置蓝图
+            var builtCells = new List<Dictionary<string, object>>();
+            var failedCells = new List<Dictionary<string, object>>();
+
+            if (build && missingCells.Count > 0)
+            {
+                // 获取建筑定义
+                ThingDef wallDef = DefDatabase<ThingDef>.GetNamedSilentFail(wallDefName);
+                if (wallDef == null)
+                {
+                    wallDef = ThingDefOf.Wall; // 使用默认墙
+                }
+
+                ThingDef stuffDef = null;
+                if (!string.IsNullOrEmpty(stuffDefName))
+                {
+                    stuffDef = DefDatabase<ThingDef>.GetNamedSilentFail(stuffDefName);
+                }
+
+                foreach (var cellInfo in missingCells)
+                {
+                    IntVec3 cell = new IntVec3((int)cellInfo["x"], 0, (int)cellInfo["z"]);
+
+                    try
+                    {
+                        // 检查是否可以放置蓝图
+                        var acceptanceReport = GenConstruct.CanPlaceBlueprintAt(wallDef, cell, Rot4.North, map, stuffDef: stuffDef);
+                        if (acceptanceReport.Accepted)
+                        {
+                            // 放置蓝图
+                            Blueprint_Build blueprint = GenConstruct.PlaceBlueprintForBuild(wallDef, cell, map, Rot4.North, Faction.OfPlayer, stuffDef);
+                            if (blueprint != null)
+                            {
+                                builtCells.Add(new Dictionary<string, object>
+                                {
+                                    ["x"] = cell.x,
+                                    ["z"] = cell.z,
+                                    ["blueprintId"] = blueprint.thingIDNumber
+                                });
+                                builtCount++;
+                            }
+                            else
+                            {
+                                failedCells.Add(new Dictionary<string, object>
+                                {
+                                    ["x"] = cell.x,
+                                    ["z"] = cell.z,
+                                    ["reason"] = "Failed to place blueprint"
+                                });
+                            }
+                        }
+                        else
+                        {
+                            failedCells.Add(new Dictionary<string, object>
+                            {
+                                ["x"] = cell.x,
+                                ["z"] = cell.z,
+                                ["reason"] = acceptanceReport.Reason?.ToString() ?? "Unknown"
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        failedCells.Add(new Dictionary<string, object>
+                        {
+                            ["x"] = cell.x,
+                            ["z"] = cell.z,
+                            ["reason"] = ex.Message
+                        });
+                    }
+                }
+            }
+
+            // 4. 返回结果
+            var result = new Dictionary<string, object>
             {
                 ["rect"] = new Dictionary<string, object>
                 {
@@ -5851,6 +6826,20 @@ namespace RimWorldAI.Core
                     ? Mathf.Round((float)builtCount / edgeCells.Count * 100 * 10) / 10  // 保留1位小数
                     : 0
             };
+
+            // 如果执行了建造，添加建造结果
+            if (build)
+            {
+                result["buildAttempted"] = true;
+                result["builtCells"] = builtCells;
+                result["failedCells"] = failedCells;
+                result["builtCount"] = builtCells.Count;
+                result["failedCount"] = failedCells.Count;
+                result["wallDef"] = wallDefName;
+                result["stuffDef"] = stuffDefName;
+            }
+
+            return result;
         }
 
         /// <summary>
@@ -6608,5 +7597,588 @@ namespace RimWorldAI.Core
         }
 
         #endregion
+
+        #region 医疗系统 - 基于 Pawn_PlayerSettings API
+
+        /// <summary>
+        /// 获取殖民者医疗护理设置
+        /// 基于 Pawn_PlayerSettings.medCare 和 selfTend
+        /// </summary>
+        public static Dictionary<string, object> GetPawnMedicalCare(Pawn pawn)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["error"] = "Pawn is null" };
+
+            var playerSettings = pawn.playerSettings;
+            if (playerSettings == null)
+                return new Dictionary<string, object> { ["error"] = "Pawn has no player settings" };
+
+            // 医疗护理级别
+            int medCareLevel = (int)playerSettings.medCare;
+            string medCareLabel = GetMedicalCareLabel(playerSettings.medCare);
+
+            // 药物政策信息
+            var drugPolicy = pawn.drugs?.CurrentPolicy;
+            var drugPolicyInfo = new Dictionary<string, object>();
+            if (drugPolicy != null)
+            {
+                drugPolicyInfo["policyId"] = drugPolicy.id;
+                drugPolicyInfo["label"] = drugPolicy.label ?? "Unnamed";
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["medCareLevel"] = medCareLevel,
+                ["medCareLabel"] = medCareLabel,
+                ["selfTend"] = playerSettings.selfTend,
+                ["drugPolicy"] = drugPolicyInfo
+            };
+        }
+
+        /// <summary>
+        /// 设置殖民者医疗护理级别
+        /// </summary>
+        public static Dictionary<string, object> SetPawnMedicalCare(Pawn pawn, int medCareLevel)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["error"] = "Pawn is null" };
+
+            if (medCareLevel < 0 || medCareLevel > 4)
+                return new Dictionary<string, object> { ["error"] = "medCareLevel must be 0-4" };
+
+            var playerSettings = pawn.playerSettings;
+            if (playerSettings == null)
+                return new Dictionary<string, object> { ["error"] = "Pawn has no player settings" };
+
+            var oldLevel = (int)playerSettings.medCare;
+            playerSettings.medCare = (MedicalCareCategory)medCareLevel;
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["oldLevel"] = oldLevel,
+                ["newLevel"] = medCareLevel,
+                ["newLabel"] = GetMedicalCareLabel((MedicalCareCategory)medCareLevel)
+            };
+        }
+
+        /// <summary>
+        /// 设置殖民者是否允许自疗
+        /// </summary>
+        public static Dictionary<string, object> SetPawnSelfTend(Pawn pawn, bool allowed)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["error"] = "Pawn is null" };
+
+            var playerSettings = pawn.playerSettings;
+            if (playerSettings == null)
+                return new Dictionary<string, object> { ["error"] = "Pawn has no player settings" };
+
+            var oldSelfTend = playerSettings.selfTend;
+            playerSettings.selfTend = allowed;
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["oldSelfTend"] = oldSelfTend,
+                ["newSelfTend"] = allowed
+            };
+        }
+
+        /// <summary>
+        /// 获取殖民者药物政策详情
+        /// </summary>
+        public static Dictionary<string, object> GetPawnDrugPolicy(Pawn pawn)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["error"] = "Pawn is null" };
+
+            var drugPolicy = pawn.drugs?.CurrentPolicy;
+            if (drugPolicy == null)
+                return new Dictionary<string, object>
+                {
+                    ["pawnId"] = pawn.thingIDNumber,
+                    ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                    ["policyId"] = -1,
+                    ["label"] = "No policy assigned"
+                };
+
+            return new Dictionary<string, object>
+            {
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["policyId"] = drugPolicy.id,
+                ["label"] = drugPolicy.label ?? "Unnamed"
+            };
+        }
+
+        /// <summary>
+        /// 获取医疗护理级别名称
+        /// </summary>
+        private static string GetMedicalCareLabel(MedicalCareCategory category)
+        {
+            switch (category)
+            {
+                case MedicalCareCategory.NoCare:
+                    return "无护理 (No Care)";
+                case MedicalCareCategory.NoMeds:
+                    return "无药物 (No Medicine)";
+                case MedicalCareCategory.HerbalOrWorse:
+                    return "草药或更差 (Herbal Or Worse)";
+                case MedicalCareCategory.NormalOrWorse:
+                    return "普通药物或更差 (Normal Or Worse)";
+                case MedicalCareCategory.Best:
+                    return "最佳医疗护理 (Best Medical Care)";
+                default:
+                    return "Unknown";
+            }
+        }
+
+        #endregion
+
+        #region 通知系统
+
+        /// <summary>
+        /// 获取通知列表
+        /// </summary>
+        public static Dictionary<string, object> GetNotifications(string sinceId = null, bool onlyNew = false, int limit = 50)
+        {
+            var manager = NotificationManager.Instance;
+            List<NotificationEvent> notifications;
+
+            if (!string.IsNullOrEmpty(sinceId))
+            {
+                notifications = manager.GetNotificationsSince(sinceId, limit);
+            }
+            else if (onlyNew)
+            {
+                notifications = manager.GetUnreadNotifications(limit);
+            }
+            else
+            {
+                notifications = manager.GetRecentNotifications(limit);
+            }
+
+            var result = new List<Dictionary<string, object>>();
+            string lastId = null;
+
+            foreach (var notification in notifications)
+            {
+                result.Add(notification.ToDictionary());
+                lastId = notification.Id;
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["notifications"] = result,
+                ["count"] = result.Count,
+                ["lastId"] = lastId ?? "",
+                ["stats"] = manager.GetStats()
+            };
+        }
+
+        /// <summary>
+        /// 标记所有通知为已读
+        /// </summary>
+        public static Dictionary<string, object> MarkAllNotificationsRead()
+        {
+            NotificationManager.Instance.MarkAllAsRead();
+            return new Dictionary<string, object>
+            {
+                ["success"] = true
+            };
+        }
+
+        /// <summary>
+        /// 清除所有通知
+        /// </summary>
+        public static Dictionary<string, object> ClearNotifications()
+        {
+            NotificationManager.Instance.ClearAll();
+            return new Dictionary<string, object>
+            {
+                ["success"] = true
+            };
+        }
+
+        /// <summary>
+        /// 获取当前活动的警报
+        /// </summary>
+        public static Dictionary<string, object> GetAlerts()
+        {
+            try
+            {
+                // 获取 UIRoot_Play 实例
+                var uiRoot = Find.UIRoot as UIRoot_Play;
+                if (uiRoot == null)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["success"] = false,
+                        ["error"] = "UIRoot_Play not available (not in play mode)"
+                    };
+                }
+
+                // 获取 AlertsReadout
+                var alertsReadout = uiRoot.alerts;
+                if (alertsReadout == null)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["success"] = false,
+                        ["error"] = "AlertsReadout is null"
+                    };
+                }
+
+                // 通过反射获取 activeAlerts 列表
+                var activeAlertsField = typeof(AlertsReadout).GetField("activeAlerts",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (activeAlertsField == null)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["success"] = false,
+                        ["error"] = "Could not access activeAlerts field"
+                    };
+                }
+
+                var activeAlerts = activeAlertsField.GetValue(alertsReadout) as List<Alert>;
+                if (activeAlerts == null)
+                {
+                    return new Dictionary<string, object>
+                    {
+                        ["success"] = true,
+                        ["alerts"] = new List<Dictionary<string, object>>(),
+                        ["count"] = 0
+                    };
+                }
+
+                var alertList = new List<Dictionary<string, object>>();
+                foreach (var alert in activeAlerts)
+                {
+                    try
+                    {
+                        var alertInfo = new Dictionary<string, object>
+                        {
+                            ["type"] = alert.GetType().Name,
+                            ["label"] = alert.Label ?? "",
+                            ["explanation"] = alert.GetExplanation().RawText ?? "",
+                            ["priority"] = alert.Priority.ToString(),
+                            ["active"] = alert.Active
+                        };
+
+                        // 获取相关目标
+                        var report = alert.GetReport();
+                        if (report.AnyCulpritValid)
+                        {
+                            var culprits = new List<string>();
+                            foreach (var culprit in report.AllCulprits)
+                            {
+                                if (culprit.IsValid)
+                                {
+                                    culprits.Add(culprit.ToString());
+                                }
+                            }
+                            if (culprits.Count > 0)
+                            {
+                                alertInfo["culprits"] = culprits;
+                            }
+                        }
+
+                        alertList.Add(alertInfo);
+                    }
+                    catch (Exception ex)
+                    {
+                        Verse.Log.Warning($"[RimWorldAI] Failed to process alert: {ex.Message}");
+                    }
+                }
+
+                return new Dictionary<string, object>
+                {
+                    ["success"] = true,
+                    ["alerts"] = alertList,
+                    ["count"] = alertList.Count
+                };
+            }
+            catch (Exception ex)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["success"] = false,
+                    ["error"] = ex.Message
+                };
+            }
+        }
+
+        #endregion
+
+        #region 殖民者控制
+
+        /// <summary>
+        /// 征召殖民者（进入战斗状态）
+        /// </summary>
+        public static Dictionary<string, object> DraftPawn(Pawn pawn)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn is null" };
+
+            if (pawn.drafter == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn has no drafter (cannot be drafted)" };
+
+            if (pawn.Downed)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn is downed" };
+
+            if (pawn.Deathresting)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn is deathresting" };
+
+            bool wasDrafted = pawn.drafter.Drafted;
+            pawn.drafter.Drafted = true;
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["wasDrafted"] = wasDrafted,
+                ["nowDrafted"] = true,
+                ["fireAtWill"] = pawn.drafter.FireAtWill
+            };
+        }
+
+        /// <summary>
+        /// 解除征召（退出战斗状态）
+        /// </summary>
+        public static Dictionary<string, object> UndraftPawn(Pawn pawn)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn is null" };
+
+            if (pawn.drafter == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn has no drafter" };
+
+            bool wasDrafted = pawn.drafter.Drafted;
+            pawn.drafter.Drafted = false;
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["wasDrafted"] = wasDrafted,
+                ["nowDrafted"] = false
+            };
+        }
+
+        /// <summary>
+        /// 设置火力模式
+        /// </summary>
+        public static Dictionary<string, object> SetFireAtWill(Pawn pawn, bool fireAtWill)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn is null" };
+
+            if (pawn.drafter == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn has no drafter" };
+
+            bool oldValue = pawn.drafter.FireAtWill;
+            pawn.drafter.FireAtWill = fireAtWill;
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["wasFireAtWill"] = oldValue,
+                ["nowFireAtWill"] = fireAtWill
+            };
+        }
+
+        /// <summary>
+        /// 获取殖民者日程表
+        /// </summary>
+        public static Dictionary<string, object> GetTimetable(Pawn pawn)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn is null" };
+
+            if (pawn.timetable == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn has no timetable" };
+
+            var timetable = new List<Dictionary<string, object>>();
+            for (int hour = 0; hour < 24; hour++)
+            {
+                var assignment = pawn.timetable.GetAssignment(hour);
+                timetable.Add(new Dictionary<string, object>
+                {
+                    ["hour"] = hour,
+                    ["assignment"] = assignment.defName,
+                    ["label"] = assignment.label ?? assignment.defName,
+                    ["allowRest"] = assignment.allowRest,
+                    ["allowJoy"] = assignment.allowJoy
+                });
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["timetable"] = timetable,
+                ["currentHour"] = GenLocalDate.HourOfDay(pawn),
+                ["currentAssignment"] = pawn.timetable.CurrentAssignment.defName
+            };
+        }
+
+        /// <summary>
+        /// 设置殖民者日程表
+        /// </summary>
+        public static Dictionary<string, object> SetTimetable(Pawn pawn, int hour, string assignmentDefName)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn is null" };
+
+            if (pawn.timetable == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn has no timetable" };
+
+            if (hour < 0 || hour > 23)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = $"Hour must be 0-23, got {hour}" };
+
+            // 查找 TimeAssignmentDef
+            TimeAssignmentDef assignment = DefDatabase<TimeAssignmentDef>.GetNamed(assignmentDefName);
+            if (assignment == null)
+            {
+                // 尝试常见的别名
+                switch (assignmentDefName.ToLower())
+                {
+                    case "anything":
+                    case "work":
+                    case "任意":
+                        assignment = TimeAssignmentDefOf.Anything;
+                        break;
+                    case "sleep":
+                    case "休息":
+                    case "睡眠":
+                        assignment = TimeAssignmentDefOf.Sleep;
+                        break;
+                    case "meditate":
+                    case "meditation":
+                    case "冥想":
+                        assignment = TimeAssignmentDefOf.Meditate;
+                        break;
+                    default:
+                        return new Dictionary<string, object>
+                        {
+                            ["success"] = false,
+                            ["error"] = $"Unknown TimeAssignmentDef: {assignmentDefName}. Valid options: Anything, Sleep, Meditate"
+                        };
+                }
+            }
+
+            var oldAssignment = pawn.timetable.GetAssignment(hour);
+            pawn.timetable.SetAssignment(hour, assignment);
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["hour"] = hour,
+                ["oldAssignment"] = oldAssignment.defName,
+                ["newAssignment"] = assignment.defName
+            };
+        }
+
+        /// <summary>
+        /// 批量设置日程表
+        /// </summary>
+        public static Dictionary<string, object> SetTimetableRange(Pawn pawn, int startHour, int endHour, string assignmentDefName)
+        {
+            if (pawn == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn is null" };
+
+            if (pawn.timetable == null)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Pawn has no timetable" };
+
+            if (startHour < 0 || startHour > 23 || endHour < 0 || endHour > 23)
+                return new Dictionary<string, object> { ["success"] = false, ["error"] = "Hours must be 0-23" };
+
+            // 查找 TimeAssignmentDef
+            TimeAssignmentDef assignment = DefDatabase<TimeAssignmentDef>.GetNamed(assignmentDefName);
+            if (assignment == null)
+            {
+                switch (assignmentDefName.ToLower())
+                {
+                    case "anything":
+                    case "work":
+                        assignment = TimeAssignmentDefOf.Anything;
+                        break;
+                    case "sleep":
+                        assignment = TimeAssignmentDefOf.Sleep;
+                        break;
+                    case "meditate":
+                        assignment = TimeAssignmentDefOf.Meditate;
+                        break;
+                    default:
+                        return new Dictionary<string, object>
+                        {
+                            ["success"] = false,
+                            ["error"] = $"Unknown TimeAssignmentDef: {assignmentDefName}"
+                        };
+                }
+            }
+
+            int changedCount = 0;
+            for (int hour = startHour; hour <= endHour; hour++)
+            {
+                pawn.timetable.SetAssignment(hour, assignment);
+                changedCount++;
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["pawnId"] = pawn.thingIDNumber,
+                ["pawnName"] = pawn.Name?.ToStringFull ?? "Unknown",
+                ["startHour"] = startHour,
+                ["endHour"] = endHour,
+                ["assignment"] = assignment.defName,
+                ["hoursChanged"] = changedCount
+            };
+        }
+
+        /// <summary>
+        /// 获取所有可用的时间安排类型
+        /// </summary>
+        public static Dictionary<string, object> GetTimeAssignments()
+        {
+            var assignments = new List<Dictionary<string, object>>();
+            foreach (var def in DefDatabase<TimeAssignmentDef>.AllDefs)
+            {
+                assignments.Add(new Dictionary<string, object>
+                {
+                    ["defName"] = def.defName,
+                    ["label"] = def.label ?? def.defName,
+                    ["allowRest"] = def.allowRest,
+                    ["allowJoy"] = def.allowJoy
+                });
+            }
+
+            return new Dictionary<string, object>
+            {
+                ["success"] = true,
+                ["assignments"] = assignments,
+                ["count"] = assignments.Count
+            };
+        }
+
+        #endregion
+
     }
 }

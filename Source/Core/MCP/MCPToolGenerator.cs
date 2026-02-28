@@ -213,13 +213,35 @@ namespace RimWorldAI.Core.MCP
                 };
             }
 
-            // 类别参数
-            if (lowerName == "category" || lowerName == "categories")
+            // 类别参数 - 建筑类别
+            if (lowerName == "category" && paramName == "category")
+            {
+                return new Dictionary<string, object>
+                {
+                    ["type"] = "string",
+                    ["enum"] = new[] { "production", "power", "defense", "storage", "furniture", "all" },
+                    ["description"] = "建筑类别筛选: production(生产-工作台)、power(电力-发电机/电池)、defense(防御-炮塔/陷阱)、storage(储存-货架)、furniture(家具-床/桌子)、all(全部-默认)"
+                };
+            }
+
+            // 类别参数 - 物品类别
+            if (lowerName == "categories")
             {
                 return new Dictionary<string, object>
                 {
                     ["type"] = "string",
                     ["description"] = "物品类别名称。常用类别：Foods(食物)、Weapons(武器)、Apparel(衣物)、Resources(资源)、Medicine(药品)、Materials(材料)。使用get_thing_categories查看完整类别树"
+                };
+            }
+
+            // filter 参数 - 工作类型筛选
+            if (lowerName == "filter")
+            {
+                return new Dictionary<string, object>
+                {
+                    ["type"] = "string",
+                    ["enum"] = new[] { "all", "supported" },
+                    ["description"] = "筛选模式: all(所有工作类型-默认)、supported(仅返回trigger_work支持的类型)"
                 };
             }
 
