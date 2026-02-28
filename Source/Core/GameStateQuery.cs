@@ -235,9 +235,6 @@ namespace RimWorldAI.Core
                     case "get_voronoi_map":
                         return GetVoronoiMap();
 
-                    case "get_cell_info":
-                        return GetCellInfo(query);
-
                     case "get_river":
                         return GetRiverInfo();
 
@@ -246,6 +243,12 @@ namespace RimWorldAI.Core
 
                     case "find_build_locations":
                         return FindBuildLocations(query);
+
+                    case "get_room_boundary":
+                        return GetRoomBoundary(query);
+
+                    case "scan_area":
+                        return ScanArea(query);
 
                     default:
                         return ErrorResponse($"Unknown action: {action}");
@@ -3232,23 +3235,56 @@ namespace RimWorldAI.Core
         }
 
         /// <summary>
-        /// 获取指定位置的详细信息
+        /// 获取房间边界建造状态（用于AI追踪建造进度）
         /// </summary>
-        private static string GetCellInfo(Dictionary<string, object> query)
+        private static string GetRoomBoundary(Dictionary<string, object> query)
         {
-            // 解析坐标参数
-            int x = 0, z = 0;
-
-            if (query.ContainsKey("x"))
+            // 参数验证
+            if (!query.ContainsKey("center_x") || !query.ContainsKey("center_z") ||
+                !query.ContainsKey("width") || !query.ContainsKey("height"))
             {
-                int.TryParse(query["x"]?.ToString(), out x);
-            }
-            if (query.ContainsKey("z"))
-            {
-                int.TryParse(query["z"]?.ToString(), out z);
+                return ErrorResponse("Missing required fields: center_x, center_z, width, height");
             }
 
-            var result = GameStateProvider.GetCellInfo(x, z);
+            int centerX, centerZ, width, height;
+            if (!int.TryParse(query["center_x"]?.ToString(), out centerX) ||
+                !int.TryParse(query["center_z"]?.ToString(), out centerZ) ||
+                !int.TryParse(query["width"]?.ToString(), out width) ||
+                !int.TryParse(query["height"]?.ToString(), out height))
+            {
+                return ErrorResponse("Invalid parameter format");
+            }
+
+            var result = GameStateProvider.GetRoomBoundary(centerX, centerZ, width, height);
+            if (result.ContainsKey("error"))
+            {
+                return ErrorResponse(result["error"].ToString());
+            }
+            return SuccessResponse(result);
+        }
+
+        /// <summary>
+        /// 批量扫描区域（替代多次 get_cell_info 调用）
+        /// </summary>
+        private static string ScanArea(Dictionary<string, object> query)
+        {
+            // 参数验证
+            if (!query.ContainsKey("center_x") || !query.ContainsKey("center_z") ||
+                !query.ContainsKey("width") || !query.ContainsKey("height"))
+            {
+                return ErrorResponse("Missing required fields: center_x, center_z, width, height");
+            }
+
+            int centerX, centerZ, width, height;
+            if (!int.TryParse(query["center_x"]?.ToString(), out centerX) ||
+                !int.TryParse(query["center_z"]?.ToString(), out centerZ) ||
+                !int.TryParse(query["width"]?.ToString(), out width) ||
+                !int.TryParse(query["height"]?.ToString(), out height))
+            {
+                return ErrorResponse("Invalid parameter format");
+            }
+
+            var result = GameStateProvider.ScanArea(centerX, centerZ, width, height);
             if (result.ContainsKey("error"))
             {
                 return ErrorResponse(result["error"].ToString());

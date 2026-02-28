@@ -5779,6 +5779,253 @@ namespace RimWorldAI.Core
         }
 
         /// <summary>
+        /// 获取房间边界建造状态
+        /// 学习 RimWorld 的 BaseGen.SymbolResolver_EdgeWalls 做法：使用 CellRect.EdgeCells 遍历边缘格子
+        /// </summary>
+        public static Dictionary<string, object> GetRoomBoundary(int centerX, int centerZ, int width, int height, Map map = null)
+        {
+            map = map ?? Find.CurrentMap;
+            if (map == null)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["error"] = "No map available"
+                };
+            }
+
+            // 1. 创建矩形区域（使用 RimWorld 的 CellRect.CenteredOn）
+            var rect = CellRect.CenteredOn(new IntVec3(centerX, 0, centerZ), width, height);
+
+            // 2. 遍历边缘格子
+            var edgeCells = new List<Dictionary<string, object>>();
+            var missingCells = new List<Dictionary<string, object>>();
+            int builtCount = 0;
+
+            foreach (var cell in rect.EdgeCells)
+            {
+                if (!cell.InBounds(map)) continue;
+
+                var status = GetCellBuildStatus(cell, map);
+                var cellInfo = new Dictionary<string, object>
+                {
+                    ["x"] = cell.x,
+                    ["z"] = cell.z,
+                    ["status"] = status.status
+                };
+
+                if (status.buildingDef != null)
+                {
+                    cellInfo["defName"] = status.buildingDef;
+                }
+
+                edgeCells.Add(cellInfo);
+
+                if (status.status == "empty")
+                {
+                    missingCells.Add(new Dictionary<string, object>
+                    {
+                        ["x"] = cell.x,
+                        ["z"] = cell.z
+                    });
+                }
+                else
+                {
+                    builtCount++;
+                }
+            }
+
+            // 3. 返回结果
+            return new Dictionary<string, object>
+            {
+                ["rect"] = new Dictionary<string, object>
+                {
+                    ["minX"] = rect.minX,
+                    ["maxX"] = rect.maxX,
+                    ["minZ"] = rect.minZ,
+                    ["maxZ"] = rect.maxZ
+                },
+                ["totalEdgeCells"] = edgeCells.Count,
+                ["edgeCells"] = edgeCells,
+                ["missingCells"] = missingCells,
+                ["completionPercent"] = edgeCells.Count > 0
+                    ? Mathf.Round((float)builtCount / edgeCells.Count * 100 * 10) / 10  // 保留1位小数
+                    : 0
+            };
+        }
+
+        /// <summary>
+        /// 获取格子建造状态
+        /// </summary>
+        private static (string status, string buildingDef) GetCellBuildStatus(IntVec3 cell, Map map)
+        {
+            // 检查已建成建筑（不可通行的建筑视为墙）
+            var building = map.edificeGrid[cell];
+            if (building != null && building.def.passability == Traversability.Impassable)
+            {
+                return ("built", building.def.defName);
+            }
+
+            // 检查蓝图和框架
+            var things = map.thingGrid.ThingsListAt(cell);
+            foreach (var thing in things)
+            {
+                // 检查蓝图
+                if (thing is Blueprint_Build blueprint)
+                {
+                    var defToBuild = blueprint.def.entityDefToBuild;
+                    return ("blueprint", defToBuild?.defName ?? thing.def.defName);
+                }
+                // 检查建造框架
+                if (thing is Frame frame)
+                {
+                    var defToBuild = frame.def.entityDefToBuild;
+                    return ("frame", defToBuild?.defName ?? thing.def.defName);
+                }
+            }
+
+            return ("empty", null);
+        }
+
+        /// <summary>
+        /// 批量扫描区域内部格子（替代多次 get_cell_info 调用，提高效率）
+        /// 学习 RimWorld 的 BaseGen 做法：使用 CellRect.Cells 遍历内部格子
+        /// </summary>
+        public static Dictionary<string, object> ScanArea(int centerX, int centerZ, int width, int height, Map map = null)
+        {
+            map = map ?? Find.CurrentMap;
+            if (map == null)
+            {
+                return new Dictionary<string, object>
+                {
+                    ["error"] = "No map available"
+                };
+            }
+
+            // 1. 创建矩形区域（使用 RimWorld 的 CellRect.CenteredOn）
+            var rect = CellRect.CenteredOn(new IntVec3(centerX, 0, centerZ), width, height);
+            rect = rect.ClipInsideMap(map);
+
+            // 2. 遍历内部格子
+            var cells = new List<Dictionary<string, object>>();
+            var buildings = new List<Dictionary<string, object>>();
+            var blueprints = new List<Dictionary<string, object>>();
+            var frames = new List<Dictionary<string, object>>();
+            var items = new List<Dictionary<string, object>>();
+            var terrainStats = new Dictionary<string, int>();
+            var seenThings = new HashSet<int>();
+
+            foreach (var cell in rect.Cells)
+            {
+                if (!cell.InBounds(map)) continue;
+
+                // 获取地形
+                var terrain = map.terrainGrid.TerrainAt(cell);
+                string terrainDefName = terrain?.defName ?? "Unknown";
+                if (!terrainStats.ContainsKey(terrainDefName))
+                    terrainStats[terrainDefName] = 0;
+                terrainStats[terrainDefName]++;
+
+                // 获取建筑
+                var building = map.edificeGrid[cell];
+                string buildingDefName = building?.def?.defName;
+
+                // 获取蓝图/框架/物品
+                string blueprintDefName = null;
+                string frameDefName = null;
+                var cellItems = new List<Dictionary<string, object>>();
+
+                var things = map.thingGrid.ThingsListAt(cell);
+                foreach (var thing in things)
+                {
+                    if (thing is Blueprint_Build bp && !seenThings.Contains(bp.thingIDNumber))
+                    {
+                        seenThings.Add(bp.thingIDNumber);
+                        blueprintDefName = bp.def.entityDefToBuild?.defName ?? bp.def.defName;
+                        blueprints.Add(new Dictionary<string, object>
+                        {
+                            ["x"] = cell.x,
+                            ["z"] = cell.z,
+                            ["defName"] = blueprintDefName
+                        });
+                    }
+                    else if (thing is Frame f && !seenThings.Contains(f.thingIDNumber))
+                    {
+                        seenThings.Add(f.thingIDNumber);
+                        frameDefName = f.def.entityDefToBuild?.defName ?? f.def.defName;
+                        frames.Add(new Dictionary<string, object>
+                        {
+                            ["x"] = cell.x,
+                            ["z"] = cell.z,
+                            ["defName"] = frameDefName
+                        });
+                    }
+                    else if (thing.def.category == ThingCategory.Item && !seenThings.Contains(thing.thingIDNumber))
+                    {
+                        seenThings.Add(thing.thingIDNumber);
+                        items.Add(new Dictionary<string, object>
+                        {
+                            ["x"] = cell.x,
+                            ["z"] = cell.z,
+                            ["defName"] = thing.def.defName,
+                            ["label"] = thing.def.LabelCap,
+                            ["stackCount"] = thing.stackCount
+                        });
+                    }
+                }
+
+                // 记录建筑（去重）
+                if (building != null && !seenThings.Contains(building.thingIDNumber))
+                {
+                    seenThings.Add(building.thingIDNumber);
+                    buildings.Add(new Dictionary<string, object>
+                    {
+                        ["x"] = cell.x,
+                        ["z"] = cell.z,
+                        ["defName"] = buildingDefName,
+                        ["label"] = building.def.LabelCap
+                    });
+                }
+
+                // 简化的格子状态
+                string status = "empty";
+                if (building != null) status = "built";
+                else if (blueprintDefName != null) status = "blueprint";
+                else if (frameDefName != null) status = "frame";
+
+                cells.Add(new Dictionary<string, object>
+                {
+                    ["x"] = cell.x,
+                    ["z"] = cell.z,
+                    ["status"] = status,
+                    ["terrain"] = terrainDefName,
+                    ["passable"] = terrain?.passability != Traversability.Impassable,
+                    ["building"] = buildingDefName,
+                    ["blueprint"] = blueprintDefName,
+                    ["frame"] = frameDefName
+                });
+            }
+
+            // 3. 返回结果
+            return new Dictionary<string, object>
+            {
+                ["rect"] = new Dictionary<string, object>
+                {
+                    ["minX"] = rect.minX,
+                    ["maxX"] = rect.maxX,
+                    ["minZ"] = rect.minZ,
+                    ["maxZ"] = rect.maxZ
+                },
+                ["totalCells"] = cells.Count,
+                ["cells"] = cells,
+                ["buildings"] = buildings,
+                ["blueprints"] = blueprints,
+                ["frames"] = frames,
+                ["items"] = items.Take(100).ToList(),  // 限制物品数量
+                ["terrainStats"] = terrainStats
+            };
+        }
+
+        /// <summary>
         /// 获取 Voronoi 骨架地图信息
         /// </summary>
         public static Dictionary<string, object> GetVoronoiMap(Map map = null)

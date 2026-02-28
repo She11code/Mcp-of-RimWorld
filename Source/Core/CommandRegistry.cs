@@ -1019,20 +1019,20 @@ namespace RimWorldAI.Core
             ["place_blueprint"] = new CommandDefinition
             {
                 Name = "place_blueprint",
-                Description = "放置建造蓝图",
+                Description = "放置单个建造蓝图（配合get_room_boundary批量建造房间）",
                 RequiredParams = new[] { "defName", "x", "z" },
                 OptionalParams = new[] { "stuffDefName", "rotation" },
                 Hints = new[]
                 {
-                    "[参数defName]建筑定义名，如Bed、TableStove、SolarGenerator，用get_buildable_defs查看全部",
+                    "[参数defName]建筑定义名，如Wall(墙)、Door(门)、Bed(床)，用get_buildable_defs查看全部",
                     "[参数x/z]放置位置的地图坐标",
                     "[参数stuffDefName]建造材料，如WoodLog(木材)、Steel(钢铁)、Plasteel(塑钢)",
                     "[参数rotation]旋转方向：North/East/South/West，默认North",
+                    "[新工作流]建造房间时：1.get_room_boundary获取边界 2.对missingCells逐个调用place_blueprint",
+                    "[旧工作流-废弃]不再需要自己计算16面墙的坐标，使用get_room_boundary一次性获取",
                     "[建造流程]place_blueprint → 确保有材料 → trigger_work(Construction)",
                     "[建筑规划]优先建造顺序：卧室(休息)→厨房(食物)→餐厅(进餐)→防御工事",
-                    "[房间尺寸]卧室建议4x4或更大，餐厅6x10以上，厨房靠近储存区",
                     "[材料选择]木材(快速建造但易燃)、钢铁(均衡)、塑钢(坚固但稀有)",
-                    "[电力规划]建筑需要电力时，确保附近有电缆连接，用get_power_buildings查看电网",
                     "[常见错误]材料不足时蓝图不会建造，用get_materials检查库存",
                     "[响应字段]success、blueprintId、position、materialsNeeded"
                 },
@@ -1075,36 +1075,56 @@ namespace RimWorldAI.Core
             ["find_build_locations"] = new CommandDefinition
             {
                 Name = "find_build_locations",
-                Description = "查找适合建造的位置（基于ESDF安全距离，返回附近障碍物信息）",
+                Description = "查找适合建造的位置（选址工具：基于ESDF安全距离）",
                 OptionalParams = new[] { "buildingDef", "minDistance", "preferIndoor", "limit" },
                 Hints = new[]
                 {
+                    "[核心用途]选址工具：找到安全的建造位置，作为get_room_boundary的center参数",
                     "[参数buildingDef]建筑定义名（可选），用于未来扩展",
                     "[参数minDistance]离墙最小距离，默认1（工作台建议1，床可0）",
                     "[参数preferIndoor]是否优先室内，默认true",
                     "[参数limit]返回数量限制，默认10，最大100",
+                    "[工作流]1.find_build_locations选址 → 2.get_room_boundary(center,5,5)获取边界 → 3.place_blueprint",
                     "[评分规则]距离越远越好，室内加分",
                     "[最近障碍物]nearestObstacle返回距离最近的障碍物详情（类型/名称/坐标）",
-                    "[附近障碍物]nearbyObstacles返回8方向搜索到的障碍物列表（含方向/距离）",
-                    "[响应字段]locations(位置列表)、totalCandidates(总候选数)"
+                    "[响应字段]locations(位置列表，每个位置含x/z坐标)、totalCandidates(总候选数)"
                 },
                 Category = "map"
             },
-            ["get_cell_info"] = new CommandDefinition
+            ["get_room_boundary"] = new CommandDefinition
             {
-                Name = "get_cell_info",
-                Description = "获取指定位置的详细信息（ESDF、地形、建筑、房间）",
-                RequiredParams = new[] { "x", "z" },
+                Name = "get_room_boundary",
+                Description = "获取房间边界建造状态（核心命令：一次性返回矩形边界的所有坐标和状态）",
+                RequiredParams = new[] { "center_x", "center_z", "width", "height" },
                 Hints = new[]
                 {
-                    "[参数x]X坐标（必填）",
-                    "[参数z]Z坐标（必填）",
-                    "[AI视觉]返回该位置的完整信息，让AI能\"看见\"该格子",
-                    "[ESDF信息]distance到最近障碍物距离，nearestObstacle障碍物详情（类型/名称/坐标）",
-                    "[地形信息]terrain包含地形类型、是否是水/河",
-                    "[建筑信息]building如果有建筑则返回建筑类型",
-                    "[房间信息]room包含房间ID、角色、是否室内、大小",
-                    "[响应字段]position、esdf(含nearestObstacle)、terrain、building、room"
+                    "[核心用途]建造房间的核心命令，解决AI\"漏墙\"问题",
+                    "[参数]center_x/center_z=房间中心坐标，width/height=房间内部尺寸",
+                    "[示例]5x5房间(16面墙)：get_room_boundary(100,100,5,5) 返回16个边界格子",
+                    "[示例]7x5房间(22面墙)：get_room_boundary(100,100,7,5) 返回22个边界格子",
+                    "[返回]rect=矩形范围，edgeCells=所有边界格子状态，missingCells=需要建造的位置",
+                    "[状态]empty=空地(需放蓝图)，built=已建成，blueprint=已放蓝图，frame=建造中",
+                    "[工作流]1.调用此命令 → 2.对missingCells逐个调用place_blueprint(\"Wall\",x,z) → 3.重复直到completionPercent=100",
+                    "[RimWorld原理]学习游戏BaseGen的CellRect.EdgeCells，预先计算边界，不需要检测封闭性",
+                    "[响应字段]rect、totalEdgeCells、edgeCells、missingCells、completionPercent"
+                },
+                Category = "map"
+            },
+            ["scan_area"] = new CommandDefinition
+            {
+                Name = "scan_area",
+                Description = "批量扫描矩形区域内部（替代多次get_cell_info调用，一次性返回区域全景）",
+                RequiredParams = new[] { "center_x", "center_z", "width", "height" },
+                Hints = new[]
+                {
+                    "[核心用途]一次性获取区域全景，替代N次get_cell_info调用",
+                    "[参数]center_x/center_z=区域中心坐标，width/height=扫描范围",
+                    "[示例]scan_area(100,100,10,10) 扫描10x10区域，返回100个格子信息",
+                    "[返回]cells=所有格子状态，buildings=建筑列表，blueprints=蓝图，items=物品",
+                    "[格子状态]status=empty/built/blueprint/frame，terrain=地形，passable=是否可通行",
+                    "[效率]1次scan_area = 100次get_cell_info，大幅减少API调用",
+                    "[工作流]选址时：scan_area → 检查passableCells和impassableCells → 决定是否建造",
+                    "[响应字段]rect、totalCells、cells、buildings、blueprints、frames、items、terrainStats"
                 },
                 Category = "map"
             },
