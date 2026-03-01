@@ -1,3 +1,0 @@
-# 注意: 必须安装 websocket-client，不是 websocket
-# pip install websocket-client
-websocket-client>=1.6.0
