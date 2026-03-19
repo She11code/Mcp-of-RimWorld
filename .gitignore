@@ -4,13 +4,14 @@ obj/
 *.dll
 *.pdb
 *.exe
+*.json
 
 # IDE
 .vs/
 .vscode/
 *.user
 *.suo
-
+反汇编代码/
 # Logs and temp files
 *.log
 tests/test.log
@@ -19,5 +20,17 @@ tests/test.log
 .DS_Store
 Thumbs.db
 
-# Claude local settings (optional - uncomment if you don't want to share)
-# .claude/settings.local.json
+# Claude local settings
+.claude/
+
+# Documentation (not tracked)
+CLAUDE.md
+Fix.md
+docs/
+tests/
+
+# Wiki
+RimWorld-Wiki/
+
+# Solution files
+*.sln
