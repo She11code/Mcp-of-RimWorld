@@ -117,6 +117,3 @@ MOD 加载后，MCP 服务器会在 `http://localhost:8080/mcp` 启动。
 
 She11code
 
-## 许可证
-
-MIT
